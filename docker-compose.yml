@@ -1,0 +1,12 @@
+services:
+  dataloom:
+    build: .
+    image: dataloom:latest
+    container_name: dataloom
+    ports:
+      - "9862:9862"
+    volumes:
+      - ./data:/app/data
+    environment:
+      DATALOOM_DATA_DIR: /app/data
+    restart: unless-stopped

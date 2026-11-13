@@ -1,0 +1,480 @@
+# -*- coding: utf-8 -*-
+"""微信通知：企业微信群机器人 / 企业微信自建应用（文字 & 图文）"""
+import base64
+import colorsys
+import hashlib
+import io
+import json
+import os
+import random
+import threading
+import time
+
+import requests
+from PIL import Image, ImageDraw, ImageFont
+
+from . import db as D
+
+COVER_W, COVER_H = 1068, 455
+_font_cache = {}
+_token_cache = {"token": None, "expires": 0}
+
+
+# ---------------- 字体 ----------------
+
+def _find_font(size):
+    # 优先使用设置中选定的自定义字体（data/uploads/fonts）
+    custom = (D.get_setting("notify_font") or "").strip()
+    if custom:
+        p = os.path.join(D.UPLOAD_DIR, "fonts", custom)
+        if os.path.isfile(p):
+            key = f"c:{custom}:{int(os.path.getmtime(p))}:{size}"
+            if key not in _font_cache:
+                try:
+                    _font_cache[key] = ImageFont.truetype(p, size)
+                except OSError:
+                    _font_cache[key] = None
+            if _font_cache[key]:
+                return _font_cache[key]
+    # 系统字体回退
+    key = f"n{size}"
+    if key in _font_cache:
+        return _font_cache[key]
+    candidates = []
+    env = os.environ.get("DATALOOM_FONT")
+    if env:
+        candidates.append(env)
+    candidates += [
+        "C:/Windows/Fonts/msyhbd.ttc", "C:/Windows/Fonts/msyh.ttc",
+        "C:/Windows/Fonts/simhei.ttf",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ]
+    for path in candidates:
+        if os.path.exists(path):
+            try:
+                f = ImageFont.truetype(path, size)
+                _font_cache[key] = f
+                return f
+            except OSError:
+                continue
+    f = ImageFont.load_default()
+    _font_cache[key] = f
+    return f
+
+
+# ---------------- 图文封面 1068x455 ----------------
+
+def _cut(draw, text, font, max_w):
+    """按像素宽度截断文本"""
+    if not text:
+        return ""
+    text = str(text)
+    if draw.textlength(text, font=font) <= max_w:
+        return text
+    while text and draw.textlength(text + "…", font=font) > max_w:
+        text = text[:-1]
+    return text + "…"
+
+
+def _paste_logo(img):
+    """右上角贴系统 Logo（设置中上传的 site_logo），支持透明背景"""
+    url = (D.get_setting("site_logo") or "").strip()
+    if not url.startswith("/uploads/"):
+        return
+    path = os.path.join(D.UPLOAD_DIR, url[len("/uploads/"):].replace("/", os.sep))
+    if not os.path.isfile(path):
+        return
+    try:
+        logo = Image.open(path).convert("RGBA")
+    except Exception:
+        return
+    if logo.width < 10 or logo.height < 10:
+        return
+    # 等比缩放到高约 110px（过宽则限制宽度）
+    h = 110
+    w = int(logo.width * h / logo.height)
+    if w > 300:
+        w, h = 300, int(logo.height * w / logo.width)
+    logo = logo.resize((w, h), Image.LANCZOS)
+    img.paste(logo, (COVER_W - w - 56, 38), logo)
+
+
+def _rand_gradient():
+    """随机生成一组渐变色（顶部色 -> 底部色）：色调全随机，
+    色相偏移限制在 ±80° 内保证过渡自然，饱和度/明度约束在鲜艳不脏的范围"""
+    def hsv(h, s, v):
+        return tuple(int(round(c * 255)) for c in colorsys.hsv_to_rgb(h, s, v))
+    h1 = random.random()
+    h2 = (h1 + random.uniform(-80, 80) / 360) % 1.0
+    s1, s2 = random.uniform(0.5, 1.0), random.uniform(0.5, 1.0)
+    v1 = random.uniform(0.5, 0.92)
+    v2 = min(0.95, max(0.4, v1 + random.uniform(-0.15, 0.15)))
+    return hsv(h1, s1, v1), hsv(h2, s2, v2)
+
+
+def _ink_of(bg):
+    """按背景色亮度自适应选择文字配色（浅底深字 / 深底浅字）"""
+    if 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2] > 180:
+        # 浅色背景 -> 深色文字
+        return {"title": (43, 43, 48), "head": (110, 100, 92), "line": (72, 68, 66),
+                "label": (92, 82, 74), "value": (38, 38, 42), "time": (105, 95, 88)}
+    # 深色背景 -> 浅色文字
+    return {"title": (255, 255, 255), "head": (255, 226, 192), "line": (255, 236, 200),
+            "label": (255, 216, 168), "value": (255, 250, 244), "time": (255, 244, 236)}
+
+
+def _ink(top, bottom, y):
+    """渐变背景：按 y 处插值色选择文字配色"""
+    t = y / COVER_H
+    bg = tuple(int(a + (c - a) * t) for a, c in zip(top, bottom))
+    return _ink_of(bg)
+
+
+def _row_ink(img, y):
+    """图片背景：按 y 行若干采样点的平均色选择文字配色"""
+    w, h = img.size
+    y = min(max(y, 0), h - 1)
+    px = img.load()
+    xs = [int(w * f) for f in (0.06, 0.3, 0.5, 0.7, 0.94)]
+    bg = tuple(sum(px[x, y][c] for x in xs) // len(xs) for c in range(3))
+    return _ink_of(bg)
+
+
+def _bg_file():
+    """自定义封面背景 data/uploads/background.png / .jpg / .jpeg（无则返回 None）"""
+    for fn in ("background.png", "background.jpg", "background.jpeg"):
+        p = os.path.join(D.UPLOAD_DIR, fn)
+        if os.path.isfile(p) and os.path.getsize(p) > 0:
+            return p
+    return None
+
+
+def make_cover(title, lines, footer, cols=None):
+    """生成 1068x455 通知封面：自定义背景图 / 全随机渐变 + 双栏数据 + 右上角 Logo
+    cols 为双栏键（默认 名称/编号 + 分类/负责人，调用方可按实际字段传入）"""
+    # 背景来源：优先自定义背景图（background.png，非 1068x455 时缩放到该尺寸），
+    # 不可用时每次随机生成一组渐变背景（色调全随机）
+    img = None
+    bg_path = _bg_file()
+    if bg_path:
+        try:
+            im = Image.open(bg_path).convert("RGB")
+            if im.size != (COVER_W, COVER_H):
+                im = im.resize((COVER_W, COVER_H), Image.LANCZOS)
+            img = im
+        except Exception:
+            img = None
+    if img is not None:
+        # 文字颜色按背景图各行实际亮度自适应
+        pick = lambda y: _row_ink(img, y)
+    else:
+        top, bottom = _rand_gradient()
+        grad = Image.new("RGB", (2, COVER_H))
+        for y in range(COVER_H):
+            t = y / COVER_H
+            grad.putpixel((0, y), tuple(int(a + (b - a) * t) for a, b in zip(top, bottom)))
+            grad.putpixel((1, y), tuple(int(a + (b - a) * t) for a, b in zip(top, bottom)))
+        img = grad.resize((COVER_W, COVER_H))
+        pick = lambda y: _ink(top, bottom, y)
+    draw = ImageDraw.Draw(img)
+
+    f_small = _find_font(32)
+    f_big = _find_font(64)
+    f_line = _find_font(40)
+
+    # 各区域文字颜色按所在背景亮度自适应（浅底深字 / 深底浅字）
+    ink_head = pick(56)
+    ink_title = pick(157)
+    inks = [pick(275), pick(355)]
+    ink_time = pick(415)
+
+    # 顶部小字 + 装饰线
+    draw.text((56, 40), _cut(draw, footer, f_small, 620),
+              font=f_small, fill=ink_head["head"])
+    draw.line((56, 96, 192, 96), fill=ink_head["line"], width=4)
+
+    # 大标题
+    draw.text((56, 124), _cut(draw, title, f_big, 640), font=f_big, fill=ink_title["title"])
+
+    # 右上角 Logo
+    _paste_logo(img)
+
+    # 双栏键值：默认 名称 / 编号 + 分类 / 负责人
+    kv = {}
+    for k, v in lines:
+        kv[k] = "、".join(str(x) for x in v) if isinstance(v, list) else str(v or "")
+    if cols is None:
+        cols = [(58, ["名　称", "编　号"], 330), (568, ["分　类", "负责人"], 290)]
+    for cx, keys, vw in cols:
+        y = 252
+        for i, k in enumerate(keys):
+            v = kv.get(k, "")
+            draw.text((cx, y), k, font=f_line, fill=inks[i]["label"])
+            draw.text((cx + 150, y), _cut(draw, v or "—", f_line, vw),
+                      font=f_line, fill=inks[i]["value"])
+            y += 78
+
+    # 右下角时间（右对齐，东八区）
+    ts = D.now().strftime("%Y-%m-%d %H:%M")
+    draw.text((COVER_W - 56 - int(draw.textlength(ts, font=f_small)), COVER_H - 58),
+              ts, font=f_small, fill=ink_time["time"])
+    return img
+
+
+def cover_png_bytes(img):
+    bio = io.BytesIO()
+    img.convert("RGB").save(bio, format="PNG")
+    return bio.getvalue()
+
+
+def _cover_media(title, lines, footer, cols=None):
+    """封面图来源：优先使用自定义文件 data/uploads/cover.png / cover.jpg，
+    无 cover 时若存在 background.png 则以其为背景动态生成 1068×455，
+    都不存在时用随机渐变背景动态生成。返回 (bytes, 文件名, mime)"""
+    for fn, mime in (("cover.png", "image/png"),
+                     ("cover.jpg", "image/jpeg"),
+                     ("cover.jpeg", "image/jpeg")):
+        p = os.path.join(D.UPLOAD_DIR, fn)
+        if os.path.isfile(p):
+            with open(p, "rb") as f:
+                data = f.read()
+            if data:
+                return data, fn, mime
+    return cover_png_bytes(make_cover(title, lines, footer, cols)), "cover.png", "image/png"
+
+
+# ---------------- 消息构建 ----------------
+
+def _title_of(data):
+    """记录标题：优先常见标题字段，其次取第一个非空值"""
+    data = data or {}
+    for k in ("name", "title", "drawing_no", "sn"):
+        v = data.get(k)
+        if isinstance(v, list):
+            v = "、".join(str(x) for x in v if str(x).strip())
+        s = str(v if v is not None else "").strip()
+        if s:
+            return s
+    for v in data.values():
+        s = str(v if v is not None else "").strip()
+        if s:
+            return s
+    return ""
+
+
+def _display_lines(table, data, user):
+    """按数据表字段顺序挑选最多 3 个非空字段作为正文"""
+    lines = [("表　名", table["name"] if table else "—")]
+    picked = 0
+    for f in (table or {}).get("fields") or []:
+        if f["key"] in ("applicant", "apply_time", "sn"):
+            continue
+        v = (data or {}).get(f["key"])
+        if isinstance(v, list):
+            v = "、".join(str(x) for x in v if str(x).strip())
+        v = str(v if v is not None else "").strip()
+        if not v:
+            continue
+        lines.append((f["label"][:4], v))
+        picked += 1
+        if picked >= 3:
+            break
+    if data and data.get("apply_time"):
+        lines.append(("时　间", data["apply_time"]))
+    lines.append(("操作人", user))
+    return lines
+
+
+def _auto_cols(lines):
+    """按正文行自动生成封面双栏布局（每列 2 行）"""
+    keys = [k for k, _ in lines]
+    left = (keys[:2] + ["", ""])[:2]
+    right = (keys[2:4] + ["", ""])[:2]
+    return [(58, left, 330), (568, right, 290)]
+
+
+def build_content(event, table, data, user):
+    s = D.get_settings()
+    names = D.site_names(s)
+    titles = {"add": "新增数据通知", "delete": "数据删除通知", "test": "测试通知"}
+    title = titles.get(event, "数据通知")
+    lines = _display_lines(table, data, user)
+    footer = f"{names['full']} · {D.APP_NAME}"
+    return title, lines, footer, _auto_cols(lines)
+
+
+def build_batch_content(table, records, user):
+    """批量新增的汇总通知内容：一条通知覆盖整批（封面为聚合展示，不逐条刷屏）"""
+    s = D.get_settings()
+    names = D.site_names(s)
+    title = f"批量新增 {len(records)} 条数据"
+    items, people = [], []
+    for r in records:
+        d = r.get("data") or {}
+        t = _title_of(d)
+        if t and t not in items:
+            items.append(t)
+        a = str(d.get("applicant") or "").strip()
+        if a and a not in people:
+            people.append(a)
+    lines = [("表　名", table["name"] if table else "—"),
+             ("条　数", f"{len(records)} 条")]
+    if items:
+        shown = "、".join(items[:8])
+        if len(items) > 8:
+            shown += f" 等 {len(items)} 条"
+        lines.append(("内　容", shown))
+    if people:
+        lines.append(("登记人", "、".join(people[:6]) +
+                      (" 等" if len(people) > 6 else "")))
+    lines.append(("时　间", (records[0].get("data") or {}).get("apply_time") or D.now_str()))
+    lines.append(("操作人", user))
+    footer = f"{names['full']} · {D.APP_NAME}"
+    return title, lines, footer, _auto_cols(lines)
+
+
+def _robot_send_md(webhook, title, lines, footer):
+    parts = [f"**【{title}】**", ""]
+    for k, v in lines:
+        parts.append(f"> **{k}**：{v}")
+    parts.append(f"> \n> ——— \n> {footer}")
+    r = requests.post(webhook, json={"msgtype": "markdown",
+                                     "markdown": {"content": "\n".join(parts)}}, timeout=8)
+    return _wecom_check(r, "群机器人")
+
+
+def _wecom_check(resp, tag):
+    try:
+        j = resp.json()
+    except ValueError:
+        return f"{tag}响应解析失败: HTTP {resp.status_code}"
+    if j.get("errcode") not in (0, None) and j.get("errcode") != 0:
+        return f"{tag}错误({j.get('errcode')}): {j.get('errmsg')}"
+    return None
+
+
+def _robot_send(webhook, style, title, lines, footer, cols=None):
+    if style == "image_text":
+        png, _, _ = _cover_media(title, lines, footer, cols)
+        if len(png) > 2 * 1024 * 1024:
+            return "封面图超过机器人 2MB 限制"
+        r = requests.post(webhook, json={
+            "msgtype": "image",
+            "image": {"base64": base64.b64encode(png).decode(),
+                      "md5": hashlib.md5(png).hexdigest()}}, timeout=10)
+        err = _wecom_check(r, "群机器人图片")
+        if err:
+            return err
+        time.sleep(0.3)
+        return _robot_send_md(webhook, title, lines, footer)
+    return _robot_send_md(webhook, title, lines, footer)
+
+
+def _wecom_token(corpid, secret):
+    now = time.time()
+    if _token_cache["token"] and now < _token_cache["expires"]:
+        return _token_cache["token"]
+    r = requests.get("https://qyapi.weixin.qq.com/cgi-bin/gettoken",
+                     params={"corpid": corpid, "corpsecret": secret}, timeout=8)
+    j = r.json()
+    if j.get("errcode") != 0:
+        raise RuntimeError(f"获取access_token失败({j.get('errcode')}): {j.get('errmsg')}")
+    _token_cache.update(token=j["access_token"], expires=now + j.get("expires_in", 7200) - 300)
+    return j["access_token"]
+
+
+def _wecom_app_send(s, style, title, lines, footer, cols=None):
+    token = _wecom_token(s["notify_corpid"], s["notify_secret"])
+    touser = (s.get("notify_touser") or "").strip() or "@all"
+    agentid = s["notify_agentid"].strip()
+    base = "https://qyapi.weixin.qq.com/cgi-bin"
+    if style == "text":
+        content = f"【{title}】\n" + "\n".join(f"{k}：{v}" for k, v in lines) + f"\n———\n{footer}"
+        r = requests.post(f"{base}/message/send?access_token={token}", json={
+            "touser": touser, "msgtype": "text", "agentid": int(agentid) if agentid.isdigit() else agentid,
+            "text": {"content": content}}, timeout=10)
+        return _wecom_check(r, "企业微信应用")
+    # 图文：上传封面 → news
+    png, cover_name, cover_mime = _cover_media(title, lines, footer, cols)
+    files = {"media": (cover_name, png, cover_mime)}
+    r = requests.post(f"{base}/media/uploadimg?access_token={token}", files=files, timeout=15)
+    j = r.json()
+    if j.get("errcode") not in (0, None) and "url" not in j:
+        return f"封面上传失败({j.get('errcode')}): {j.get('errmsg')}"
+    desc = "\n".join(f"{k}：{v}" for k, v in lines)
+    r = requests.post(f"{base}/message/send?access_token={token}", json={
+        "touser": touser, "msgtype": "news", "agentid": int(agentid) if agentid.isdigit() else agentid,
+        "news": {"articles": [{
+            "title": title, "description": desc[:255],
+            "url": D.GITHUB_URL, "picurl": j.get("url", "")}]}}, timeout=10)
+    return _wecom_check(r, "企业微信应用")
+
+
+def send_notification(event, table=None, data=None, user=""):
+    """发送通知，成功返回 None，失败返回错误描述"""
+    s = D.get_settings()
+    if s["notify_enabled"] != "1":
+        return "通知未启用"
+    title, lines, footer, cols = build_content(event, table, data, user)
+    try:
+        if s["notify_type"] == "robot":
+            webhook = (s.get("notify_webhook") or "").strip()
+            if not webhook:
+                return "未配置群机器人 Webhook 地址"
+            return _robot_send(webhook, s["notify_style"], title, lines, footer, cols)
+        corpid = (s.get("notify_corpid") or "").strip()
+        secret = (s.get("notify_secret") or "").strip()
+        agentid = (s.get("notify_agentid") or "").strip()
+        if not (corpid and secret and agentid):
+            return "企业微信应用参数不完整（需要企业ID / 密钥 / 应用AgentId）"
+        return _wecom_app_send(s, s["notify_style"], title, lines, footer, cols)
+    except Exception as e:
+        return f"发送异常: {e}"
+
+
+def send_notification_async(event, table=None, data=None, user=""):
+    def run():
+        err = send_notification(event, table, data, user)
+        if err:
+            D.sys_log("WARN", "NOTIFY", f"通知发送失败: {err}")
+        else:
+            D.sys_log("INFO", "NOTIFY",
+                      f"通知已发送: {event} " +
+                      (_title_of(data) if data else ""))
+    threading.Thread(target=run, daemon=True).start()
+
+
+def send_batch_notification(table, records, user):
+    """批量新增汇总通知：整批只发一条（聚合展示，不逐条刷屏）"""
+    s = D.get_settings()
+    if s["notify_enabled"] != "1":
+        return "通知未启用"
+    title, lines, footer, cols = build_batch_content(table, records, user)
+    try:
+        if s["notify_type"] == "robot":
+            webhook = (s.get("notify_webhook") or "").strip()
+            if not webhook:
+                return "未配置群机器人 Webhook 地址"
+            return _robot_send(webhook, s["notify_style"], title, lines, footer, cols)
+        corpid = (s.get("notify_corpid") or "").strip()
+        secret = (s.get("notify_secret") or "").strip()
+        agentid = (s.get("notify_agentid") or "").strip()
+        if not (corpid and secret and agentid):
+            return "企业微信应用参数不完整（需要企业ID / 密钥 / 应用AgentId）"
+        return _wecom_app_send(s, s["notify_style"], title, lines, footer, cols)
+    except Exception as e:
+        return f"发送异常: {e}"
+
+
+def send_batch_notification_async(table, records, user):
+    def run():
+        err = send_batch_notification(table, records, user)
+        if err:
+            D.sys_log("WARN", "NOTIFY", f"批量通知发送失败: {err}")
+        else:
+            D.sys_log("INFO", "NOTIFY",
+                      f"通知已发送: batch_add 共 {len(records)} 条")
+    threading.Thread(target=run, daemon=True).start()

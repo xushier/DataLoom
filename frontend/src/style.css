@@ -1,0 +1,319 @@
+/* 全局样式：字体统一（Helvetica/Arial + 系统中文字体）、
+   对齐、统一圆角体系、紧凑表格、滚动 */
+
+/* ---------- 字体：Helvetica, Arial, sans-serif（豆瓣同款） ----------
+   字母/数字/符号用 Helvetica（Windows 无此字体时浏览器自动以 Arial 顶替），
+   中文回退到系统默认无衬线（Windows 微软雅黑 / macOS 苹方），笔画清晰易读；
+   不再内置 Geist / Noto 字体文件 */
+:root {
+  --dc-font: Helvetica, Arial, sans-serif;
+  --el-font-family: var(--dc-font);
+  --el-border-radius-base: 8px;
+  --el-border-radius-small: 6px;
+  --dc-radius: 10px;
+  --dc-radius-lg: 14px;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family: var(--dc-font);
+  color: var(--dc-text);
+  background: var(--dc-bg);
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 细滚动条 */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-thumb {
+  background: color-mix(in srgb, var(--dc-primary) 30%, #b8c0c8);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track { background: transparent; }
+
+/* ---------- 布局基元 ---------- */
+.page {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  max-width: 100%;
+}
+.page-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.card {
+  background: var(--dc-card);
+  border: 1px solid var(--dc-border);
+  border-radius: var(--dc-radius);
+  box-shadow: var(--dc-shadow);
+}
+.card-pad { padding: 16px; }
+.muted { color: var(--dc-text-soft); font-size: 13px; }
+
+/* ---------- 表格：紧凑、近似 Excel ---------- */
+.dc-table.el-table {
+  --el-table-row-hover-bg-color: var(--dc-primary-soft);
+  font-size: 13px;
+  border-radius: var(--dc-radius);
+  overflow: hidden;
+}
+.dc-table.el-table .el-table__header th {
+  background: var(--dc-bg-soft) !important;
+  color: var(--dc-text);
+  font-weight: 500;
+  padding: 6px 0;
+}
+.dc-table.el-table .el-table__cell {
+  padding: 5px 0;
+  line-height: 1.45;
+}
+.dc-table .cell {
+  padding: 0 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.dc-table .el-table__empty-block { min-height: 120px; }
+/* 竖向边框（列分隔线）：由系统设置「表格边框」开关控制，默认关闭 */
+html[data-vborder="1"] .dc-table .el-table__cell { border-right: 1px solid var(--dc-border); }
+html[data-vborder="1"] .dc-table .el-table__cell:last-child { border-right: none; }
+
+/* ---------- 拖拽列宽 ----------
+   EP 的列宽拖拽要求表格开启 border 模式；开启后这里把边框视觉全部隐藏，
+   保持与未开启时完全一致的外观（边框线透明且不吃宽度），仅保留拖拽能力 */
+.dc-table.el-table--border {
+  --el-table-border: 0px solid transparent;
+  --el-table-border-color: transparent;
+}
+/* 拖拽时跟随鼠标的竖线改用主题色，默认的边框色已被置透明 */
+.dc-table .el-table__column-resize-proxy { border-left: 1px solid var(--dc-primary); }
+/* 单选 / 多选列 */
+.dc-table .el-table__cell .el-radio { margin-right: 0; height: auto; }
+
+/* ---------- 表格操作列：描边胶囊按钮 ----------
+   背景透明 + 同色描边，行 hover 时按钮依然清晰可见 */
+.op-btns { display: inline-flex; align-items: center; }
+.op-btns .el-button { margin-left: 0; padding: 4px 10px; }
+.op-btns .el-button + .el-button { margin-left: 6px; }
+.op-btns .el-button.is-text.is-has-bg { background: transparent; }
+/* 默认类型（无 type）的文字按钮：加中性描边，与 primary/danger 风格统一 */
+.op-btns .el-button.is-text.is-has-bg:not(.el-button--primary):not(.el-button--danger) {
+  color: var(--dc-text);
+  border: 1px solid var(--dc-border);
+}
+.op-btns .el-button.is-text.is-has-bg:not(.el-button--primary):not(.el-button--danger):hover {
+  background: var(--dc-bg-soft);
+  border-color: var(--dc-text-soft);
+  color: var(--dc-text);
+}
+.op-btns .el-button--primary.is-text.is-has-bg {
+  color: var(--dc-primary);
+  border: 1px solid color-mix(in srgb, var(--dc-primary) 50%, transparent);
+}
+.op-btns .el-button--primary.is-text.is-has-bg:hover {
+  background: var(--dc-primary-soft); color: var(--dc-primary);
+  border-color: var(--dc-primary);
+}
+.op-btns .el-button--danger.is-text.is-has-bg {
+  color: #d05650;
+  border: 1px solid color-mix(in srgb, #d05650 50%, transparent);
+}
+.op-btns .el-button--danger.is-text.is-has-bg:hover {
+  background: color-mix(in srgb, #d05650 10%, transparent); color: #d05650;
+  border-color: #d05650;
+}
+
+/* ---------- 横向分段 tabs（全局统一：长条背景 + 滑块过渡动画） ---------- */
+.dc-tabs .el-tabs__header { margin: 0 0 12px; }
+.dc-tabs .el-tabs__nav-wrap::after { display: none; }
+.dc-tabs .el-tabs__nav {
+  position: relative;
+  display: flex;
+  padding: 5px;
+  background: var(--dc-bg-soft);
+  border-radius: 10px;
+}
+/* 复用 EP 自带 active-bar 作绝对定位滑块（自带 width/transform 过渡动画）。
+   EP 计算滑块宽度时会减去 item 的左右内边距，导致滑块紧贴文字；
+   故用左右同色投影外扩 18px（与 item 内边距一致），白色滑块恰好覆盖整个 tab 项盒子，
+   与深色长条四周间距统一为 5px */
+.dc-tabs .el-tabs__active-bar {
+  display: block;
+  top: 5px;
+  bottom: auto;
+  height: calc(100% - 10px);
+  border-radius: 8px;
+  background: var(--dc-card);
+  box-shadow: -18px 0 0 var(--dc-card), 18px 0 0 var(--dc-card), var(--dc-shadow);
+}
+.dc-tabs .el-tabs__item {
+  position: relative; z-index: 2;
+  height: 36px; line-height: 36px; padding: 0 18px;
+  border-radius: 8px; color: var(--dc-text-soft);
+  transition: color .2s;
+}
+/* EP 默认把首个可见 tab（active-bar 是 nav 第一个子元素，故首个 tab 为 :nth-child(2)）
+   和最后一个 tab 的外侧内边距清零，此处覆盖回去，保证首尾文字与深色长条边缘有足够间距。
+   选择器加 .el-tabs 提升特异性，压过 EP 同名规则 */
+.el-tabs.dc-tabs .el-tabs__nav > .el-tabs__item:nth-child(2) { padding-left: 18px; }
+.el-tabs.dc-tabs .el-tabs__nav > .el-tabs__item:last-child  { padding-right: 18px; }
+.dc-tabs .el-tabs__item:hover { color: var(--dc-primary); }
+.dc-tabs .el-tabs__item.is-active {
+  color: var(--dc-primary); font-weight: 600;
+}
+/* 移动端：原生横向滑动。EP 检测溢出后会进入 scrollable 模式（transform 平移 + 左右箭头
+   + nav-wrap 加 20px 内边距），与原生滚动叠加会造成滑块错位、投影压到箭头，
+   故统一改用原生滚动：隐藏箭头、去掉预留内边距、禁用 EP 的 transform 平移 */
+@media (max-width: 768px) {
+  .dc-tabs .el-tabs__nav-wrap.is-scrollable { padding: 0; }
+  .dc-tabs .el-tabs__nav-prev,
+  .dc-tabs .el-tabs__nav-next { display: none; }
+  .dc-tabs .el-tabs__nav { transform: none !important; }
+  .dc-tabs .el-tabs__nav-scroll { overflow-x: auto; scrollbar-width: none; }
+  .dc-tabs .el-tabs__nav-scroll::-webkit-scrollbar { display: none; }
+  .dc-tabs .el-tabs__item { flex: none; white-space: nowrap; }
+}
+
+/* ---------- el-segmented 分段控件：与 dc-tabs 同风格 ---------- */
+.el-segmented, .el-segmented--small, .el-segmented--large {
+  --el-segmented-bg-color: var(--dc-bg-soft);
+  --el-segmented-item-selected-bg-color: var(--dc-card);
+  --el-segmented-item-selected-color: var(--dc-primary);
+  --el-segmented-item-hover-color: var(--dc-primary);
+  --el-segmented-item-hover-bg-color: transparent;
+  --el-segmented-item-active-bg-color: transparent;
+  border-radius: 10px;
+}
+.el-segmented { min-height: 26px; padding: 3px; }
+.el-segmented--small { padding: 2px; }
+.el-segmented .el-segmented__item-selected {
+  border-radius: 8px;
+  box-shadow: var(--dc-shadow);
+}
+.el-segmented--small .el-segmented__item-selected { border-radius: 7px; }
+.el-segmented__item.is-selected { font-weight: 600; }
+/* 移动端点按不出现文字选中/点按高亮的蓝色半透明块（EP tabs item 自带 user-select:none，segmented 缺失） */
+.el-segmented__item, .el-segmented__item-label {
+  -webkit-tap-highlight-color: transparent;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* 斑马纹交由组件 stripe，浅主题下再弱化一次 */
+html.dark .dc-table.el-table .el-table__tr.bg-row td.el-table__cell {
+  background: var(--dc-bg-soft) !important;
+}
+
+/* ---------- 弹层圆角统一 ---------- */
+.el-dialog { border-radius: var(--dc-radius-lg); }
+.el-message-box { border-radius: var(--dc-radius-lg); }
+.el-notification { border-radius: var(--dc-radius-lg); }
+.el-popper.is-light { border-radius: var(--dc-radius); }
+.el-popper.is-dark { border-radius: 8px; }
+.el-drawer.rtl { border-radius: var(--dc-radius-lg) 0 0 var(--dc-radius-lg); }
+.el-drawer.ltr { border-radius: 0 var(--dc-radius-lg) var(--dc-radius-lg) 0; }
+.el-upload-dragger { border-radius: var(--dc-radius); }
+
+/* 下拉菜单：内缩胶囊条目 */
+.el-dropdown-menu { padding: 5px; }
+.el-dropdown-menu .el-dropdown-menu__item {
+  border-radius: 6px;
+  line-height: 30px;
+  padding: 0 12px;
+  margin: 1px 0;
+  transition: background-color .18s;
+}
+
+/* 下拉选择（el-select）：选项同样改为内缩圆角滑块（hover 浅灰、选中主色浅底，带过渡） */
+.el-select-dropdown__list { padding: 5px; }
+.el-select-dropdown__item {
+  margin: 1px 0;
+  border-radius: 8px;
+  transition: background-color .18s;
+}
+.el-select-dropdown__item.is-hovering,
+.el-select-dropdown__item:not(.is-disabled):hover {
+  background-color: var(--dc-bg-soft);
+}
+.el-select-dropdown__item.is-selected,
+.el-select-dropdown__item.is-selected.is-hovering,
+.el-select-dropdown__item.is-selected:not(.is-disabled):hover {
+  background-color: var(--dc-primary-soft);
+}
+
+/* el-autocomplete 建议下拉：与 el-select 同款内缩圆角胶囊 */
+.el-autocomplete-suggestion__wrap { padding: 5px; }
+.el-autocomplete-suggestion li {
+  margin: 1px 0;
+  line-height: 30px;
+  padding: 0 12px;
+  border-radius: 8px;
+  transition: background-color .18s;
+  -webkit-tap-highlight-color: transparent;
+  user-select: none;
+}
+.el-autocomplete-suggestion li:hover,
+.el-autocomplete-suggestion li.highlighted {
+  background-color: var(--dc-bg-soft);
+}
+
+/* ---------- 弹窗 ---------- */
+.el-dialog__header {
+  margin: 0;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--dc-border);
+}
+.el-dialog__title { font-size: 15px; font-weight: 600; }
+.el-dialog__headerbtn { top: 15px; }
+.el-dialog__footer {
+  padding: 10px 20px 14px;
+  border-top: 1px solid var(--dc-border);
+}
+.el-dialog__body { padding: 18px 20px; }
+
+/* ---------- 对话框 bounce 弹入动画（全局所有对话框生效） ---------- */
+@keyframes dcDialogBounce {
+  0% { transform: scale(.86); opacity: 0; }
+  55% { transform: scale(1.035); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+.dialog-fade-enter-active .el-dialog,
+.el-fade-in-linear-enter-active .el-message-box {
+  animation: dcDialogBounce .3s cubic-bezier(.34, 1.4, .64, 1);
+}
+.dialog-fade-leave-active .el-dialog,
+.el-fade-in-linear-leave-active .el-message-box {
+  transition: transform .18s ease-in, opacity .18s ease-in;
+}
+.dialog-fade-leave-to .el-dialog,
+.el-fade-in-linear-leave-to .el-message-box {
+  transform: scale(.94); opacity: 0;
+}
+
+/* ---------- 表单 ---------- */
+.el-form-item__label { font-size: 13px; }
+.el-button { font-weight: 500; }
+
+/* ---------- 数字等宽 ---------- */
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* ---------- 滚动条平滑 ---------- */
+.el-scrollbar__wrap { scroll-behavior: smooth; }
+
+/* ---------- 移动端 ---------- */
+@media (max-width: 768px) {
+  .page { padding: 10px; gap: 10px; }
+  .el-dialog { width: 94% !important; margin-top: 6vh !important; }
+  .card-pad { padding: 12px; }
+  .el-message-box { width: 92% !important; }
+}
