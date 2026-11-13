@@ -530,6 +530,9 @@
             <el-tooltip v-else-if="row.type === 'rating'" content="星级评分" placement="top">
               <span class="muted">最多 {{ ratingMax(row) }} 星</span>
             </el-tooltip>
+            <el-tooltip v-else-if="row.type === 'number'" :content="numSummary(row)" placement="top">
+              <span class="muted">{{ numSummary(row) }}</span>
+            </el-tooltip>
             <el-tooltip v-else-if="row.type === 'date_diff'"
                         :content="diffSummary(row) || '未指定起止字段'" placement="top">
               <span class="muted">{{ diffSummary(row) || '未配置' }}</span>
@@ -538,6 +541,17 @@
               <span class="muted">{{ qtySummary(row) }}</span>
             </el-tooltip>
             <span v-else class="muted">—</span>
+          </template>
+        </el-table-column>
+        <el-table-column label="排序" width="96" align="center">
+          <template #default="{ $index }">
+            <div class="op-btns">
+              <el-button size="small" text bg :icon="ArrowUp" :disabled="$index === 0"
+                         title="上移" @click="moveField($index, -1)" />
+              <el-button size="small" text bg :icon="ArrowDown"
+                         :disabled="$index === editFields.length - 1"
+                         title="下移" @click="moveField($index, 1)" />
+            </div>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="132" align="center">
@@ -576,6 +590,14 @@
           <el-switch v-else-if="fieldForm.type === 'switch'" v-model="fieldForm.default_value" />
           <el-input v-else v-model="fieldForm.default_value" placeholder="留空则无默认值" />
         </el-form-item>
+        <el-form-item v-if="fieldForm.type === 'number'" label="小数位">
+          <el-select v-model="fieldForm.numPrecision" class="w-full">
+            <el-option label="不限制" value="" />
+            <el-option v-for="n in [0, 1, 2, 3, 4, 5, 6]" :key="n"
+                       :label="`保留 ${n} 位小数`" :value="n" />
+          </el-select>
+          <div class="field-tip muted">存入与导入时按该精度自动取整，留空表示不处理</div>
+        </el-form-item>
         <el-form-item v-if="isSelType(fieldForm.type)" label="可选值">
           <el-select v-model="fieldForm.options" multiple filterable allow-create
                      default-first-option placeholder="输入后回车添加，可预先配置" class="w-full">
@@ -598,11 +620,31 @@
         <el-form-item v-if="fieldForm.type === 'rating'" label="满分星数">
           <el-input-number v-model="fieldForm.ratingMax" :min="3" :max="10" :step="1" />
         </el-form-item>
-        <!-- 日期差值：起止日期字段 -->
+        <!-- 日期差值：起始条件 + 起止日期字段 -->
+        <el-form-item v-if="fieldForm.type === 'date_diff'" label="起始条件">
+          <el-select v-model="fieldForm.ddStartField" clearable
+                     placeholder="不启用（按起始日期计算）" class="w-full"
+                     @change="onDdStartFieldChange">
+            <el-option v-for="f in statusFields" :key="f.key" :label="f.label" :value="f.key" />
+          </el-select>
+          <div class="field-tip muted">
+            启用后，字段命中起始取值时才开始计算；切走后清零，再次命中重新起算
+          </div>
+        </el-form-item>
+        <el-form-item v-if="fieldForm.type === 'date_diff' && fieldForm.ddStartField" label="起始取值">
+          <el-select v-model="fieldForm.ddStartValues" multiple clearable
+                     placeholder="选择触发开始的取值" class="w-full">
+            <el-option v-for="v in ddStartValueOptions" :key="v" :label="v" :value="v" />
+          </el-select>
+          <div class="field-tip muted">
+            命中任一取值即从变更当天起算；未命中时显示 0 天
+          </div>
+        </el-form-item>
         <el-form-item v-if="fieldForm.type === 'date_diff'" label="起始日期">
           <el-select v-model="fieldForm.ddStart" placeholder="选择日期字段" class="w-full">
             <el-option v-for="f in dateFields" :key="f.key" :label="f.label" :value="f.key" />
           </el-select>
+          <div class="field-tip muted">未配置起始条件时按该日期字段计算</div>
         </el-form-item>
         <el-form-item v-if="fieldForm.type === 'date_diff'" label="结束日期">
           <el-select v-model="fieldForm.ddEnd" placeholder="留空表示按今天计算" clearable class="w-full">
@@ -697,7 +739,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, FolderAdd, Delete } from '@element-plus/icons-vue'
+import { Plus, FolderAdd, Delete, ArrowUp, ArrowDown } from '@element-plus/icons-vue'
 import { http, downloadBlob } from '@/api'
 import { useApp, THEMES } from '@/store'
 import Logo from '@/components/Logo.vue'
@@ -714,7 +756,7 @@ const FIELD_TYPES = {
   multi_select: '多选下拉', radio: '单选组', checkbox: '复选组', switch: '开关',
   date: '日期', datetime: '日期时间',
   color_tag: '彩色标签', rating: '评分', date_diff: '日期差值',
-  quantity: '数量明细'
+  quantity: '数量明细', contact: '联系方式'
 }
 const FIELD_TIPS = {
   select: '可搜索，输入新值会自动加入可选值',
@@ -725,10 +767,11 @@ const FIELD_TIPS = {
   rating: '点击星星打分，存数字，可排序与求平均',
   date_diff: '自动计算两个日期间的天数，并以「天 / 个月 / 年」显示',
   quantity: '总数 + 一层分项明细，可统计总数；明细仅展开查看，不参与拆分统计',
+  contact: '手机 / 座机 / 400 / 邮箱，多个用、分隔，保存时校验格式',
   switch: '开关，存 1 / 0',
   date: '日期',
   datetime: '日期时间',
-  number: '数字',
+  number: '数字，可配置小数位精度',
   text: '单行文本',
   textarea: '多行文本'
 }
@@ -940,6 +983,7 @@ const fieldForm = reactive({
   id: null, table_id: null, label: '', type: 'text', required: false,
   default_value: '', options: [], is_system: false,
   colorList: [], ratingMax: 5, ddStart: '', ddEnd: '', ddStatus: '', ddValues: [],
+  ddStartField: '', ddStartValues: [], numPrecision: '',
   qtyMode: 'auto', qtyUnit: ''
 })
 
@@ -980,10 +1024,17 @@ function diffSummary(row) {
   const label = k => (fieldsTable.value?.fields || []).find(f => f.key === k)?.label || k
   if (!cfg.start) return ''
   const s = `${label(cfg.start)} → ${cfg.end ? label(cfg.end) : '今天'}`
-  if (cfg.end_field && (cfg.end_values || []).length) {
-    return `${s}；终态冻结`
+  const bits = []
+  if (cfg.start_field && (cfg.start_values || []).length) {
+    bits.push(`命中 ${label(cfg.start_field)} 后起算`)
   }
-  return s
+  if (cfg.end_field && (cfg.end_values || []).length) bits.push('终态冻结')
+  return bits.length ? `${s}；${bits.join('，')}` : s
+}
+function numSummary(row) {
+  const cfg = row.options && typeof row.options === 'object' ? row.options : {}
+  return Number.isFinite(Number(cfg.precision)) && cfg.precision !== null
+    ? `精确到 ${cfg.precision} 位小数` : '不限小数位'
 }
 function qtySummary(row) {
   const cfg = row.options && typeof row.options === 'object' ? row.options : {}
@@ -1001,7 +1052,12 @@ const ddValueOptions = computed(() => {
   const f = (fieldsTable.value?.fields || []).find(x => x.key === fieldForm.ddStatus)
   return f ? colorOptions(f).map(o => o.value) : []
 })
+const ddStartValueOptions = computed(() => {
+  const f = (fieldsTable.value?.fields || []).find(x => x.key === fieldForm.ddStartField)
+  return f ? colorOptions(f).map(o => o.value) : []
+})
 function onDdStatusChange() { fieldForm.ddValues = [] }
+function onDdStartFieldChange() { fieldForm.ddStartValues = [] }
 function colorTagFields(row) {
   return (row.fields || []).filter(f => f.type === 'color_tag')
 }
@@ -1072,6 +1128,27 @@ function openFields(row) {
   fieldsOpen.value = true
 }
 
+async function moveField(index, dir) {
+  const target = index + dir
+  if (target < 0 || target >= editFields.value.length) return
+  const list = editFields.value
+  const [item] = list.splice(index, 1)
+  list.splice(target, 0, item)
+  try {
+    await http.post(`/tables/${fieldsTable.value.id}/fields/reorder`,
+      { ids: list.map(f => f.id) })
+    ElMessage.success('字段顺序已更新，数据表列顺序同步调整')
+  } catch (e) {
+    ElMessage.error(e?.message || '排序保存失败')
+    await loadTables()
+    const t = tables.value.find(x => x.id === fieldsTable.value?.id)
+    if (t) {
+      fieldsTable.value = t
+      editFields.value = t.fields || []
+    }
+  }
+}
+
 function openFieldEdit(f) {
   if (f) {
     const raw = f.options
@@ -1079,16 +1156,22 @@ function openFieldEdit(f) {
     const isRating = f.type === 'rating'
     const isDiff = f.type === 'date_diff'
     const isQty = f.type === 'quantity'
+    const isNum = f.type === 'number'
+    const isContact = f.type === 'contact'
     Object.assign(fieldForm, {
       id: f.id, table_id: fieldsTable.value.id, label: f.label, type: f.type,
       required: !!f.required, default_value: f.default_value || '',
-      options: (isColor || isRating || isDiff || isQty) ? [] : [...(raw || [])],
+      options: (isColor || isRating || isDiff || isQty || isNum || isContact) ? [] : [...(raw || [])],
       colorList: isColor ? colorOptions(f).map(o => ({ ...o })) : [],
       ratingMax: isRating ? ratingMaxOf(f) : 5,
       ddStart: isDiff ? (raw?.start || '') : '',
       ddEnd: isDiff ? (raw?.end || '') : '',
       ddStatus: isDiff ? (raw?.end_field || '') : '',
       ddValues: isDiff && Array.isArray(raw?.end_values) ? [...raw.end_values] : [],
+      ddStartField: isDiff ? (raw?.start_field || '') : '',
+      ddStartValues: isDiff && Array.isArray(raw?.start_values) ? [...raw.start_values] : [],
+      numPrecision: isNum && raw?.precision !== undefined && raw?.precision !== null
+        ? Number(raw.precision) : '',
       qtyMode: isQty && raw?.mode === 'manual' ? 'manual' : 'auto',
       qtyUnit: isQty ? (raw?.unit || '') : '',
       is_system: !!f.is_system
@@ -1098,6 +1181,7 @@ function openFieldEdit(f) {
       id: null, table_id: fieldsTable.value.id, label: '', type: 'text',
       required: false, default_value: '', options: [], is_system: false,
       colorList: [], ratingMax: 5, ddStart: '', ddEnd: '', ddStatus: '', ddValues: [],
+      ddStartField: '', ddStartValues: [], numPrecision: '',
       qtyMode: 'auto', qtyUnit: ''
     })
   }
@@ -1118,10 +1202,15 @@ async function saveField() {
     if (!fieldForm.ddStart) return ElMessage.warning('请选择起始日期字段')
     options = { start: fieldForm.ddStart, end: fieldForm.ddEnd || '',
                 end_field: fieldForm.ddStatus || '',
-                end_values: fieldForm.ddStatus ? [...fieldForm.ddValues] : [] }
+                end_values: fieldForm.ddStatus ? [...fieldForm.ddValues] : [],
+                start_field: fieldForm.ddStartField || '',
+                start_values: fieldForm.ddStartField ? [...fieldForm.ddStartValues] : [] }
   } else if (t === 'quantity') {
     options = { mode: fieldForm.qtyMode === 'manual' ? 'manual' : 'auto',
                 unit: String(fieldForm.qtyUnit || '').trim() }
+  } else if (t === 'number') {
+    options = fieldForm.numPrecision === '' || fieldForm.numPrecision === null
+      ? {} : { precision: Number(fieldForm.numPrecision) }
   }
   savingField.value = true
   try {

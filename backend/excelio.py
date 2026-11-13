@@ -146,7 +146,7 @@ def import_xlsx(table, f):
                 v = _cell_str(v)
                 if fl["type"] == "number":
                     try:
-                        v = int(float(v)) if str(v) not in ("", None) else ""
+                        v = float(v) if str(v) not in ("", None) else ""
                     except (TypeError, ValueError):
                         pass
                 if fl["type"] == "quantity":

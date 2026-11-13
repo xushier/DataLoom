@@ -119,6 +119,14 @@
                           placement="top">
                 <span class="dd-frozen">已结束</span>
               </el-tooltip>
+              <el-tooltip v-else-if="row.calc?.[f.key]?.pending"
+                          content="尚未命中起始条件，命中后开始计算" placement="top">
+                <span class="dd-frozen">未开始</span>
+              </el-tooltip>
+              <el-tooltip v-else-if="ddArmed(f) && row.calc?.[f.key]?.started"
+                          :content="`自 ${row.calc[f.key].started} 起算`" placement="top">
+                <span class="dd-start">起算</span>
+              </el-tooltip>
             </span>
             <!-- 数量明细：总数 + 分项，悬停查看完整明细 -->
             <span v-else-if="f.type === 'quantity'" class="qty-cell">
@@ -368,6 +376,11 @@ function ratingMax(f) {
 }
 
 /* ---------------- 数量明细 ---------------- */
+
+function ddArmed(f) {
+  const o = f.options && typeof f.options === 'object' ? f.options : {}
+  return !!(o.start_field && (o.start_values || []).length)
+}
 
 function qtyUnit(f) {
   const o = f.options && typeof f.options === 'object' ? f.options : {}
@@ -789,6 +802,9 @@ function fmtCell(v) {
 .dd-frozen { font-size: 11px; line-height: 15px; padding: 0 5px; border-radius: 3px;
              background: var(--el-fill-color); color: var(--el-text-color-secondary);
              cursor: default; }
+.dd-start { font-size: 11px; line-height: 15px; padding: 0 5px; border-radius: 3px;
+            background: color-mix(in srgb, var(--dc-primary) 12%, transparent);
+            color: var(--dc-primary); cursor: default; }
 
 /* 数量明细：总数 + 分项小签 */
 .qty-cell { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }

@@ -136,9 +136,14 @@
                                  :debounce="150"
                                  :fetch-suggestions="(q, cb) => fetchSuggest(f.key, q, cb)"
                                  placeholder="可搜索，无则直接输入新建" clearable />
+                <!-- 联系方式：手机 / 座机 / 400 / 邮箱 -->
+                <el-input v-else-if="f.type === 'contact'" v-model="e[f.key]"
+                          placeholder="手机 / 座机 / 400 / 邮箱，多个用、分隔" clearable />
                 <!-- 数字 -->
                 <el-input-number v-else-if="f.type === 'number'" v-model="e[f.key]"
-                                 :controls="false" class="w-full" placeholder="留空自动生成" />
+                                 :controls="false" class="w-full"
+                                 :precision="numPrecision(f)" :step="numStep(f)"
+                                 placeholder="留空自动生成" />
                 <!-- 日期 -->
                 <el-date-picker v-else-if="f.type === 'date'" v-model="e[f.key]"
                                 type="date" value-format="YYYY-MM-DD" placeholder="选择日期"
@@ -292,7 +297,14 @@ function condMet(v, values) {
 
 function diffText(f, entry) {
   const cfg = f.options && typeof f.options === 'object' ? f.options : {}
-  const start = toDate(entry?.[cfg.start])
+  const armed = !!(cfg.start_field && (cfg.start_values || []).length)
+  if (armed && !condMet(entry?.[cfg.start_field], cfg.start_values)) return '未开始'
+  let start = null
+  if (armed) {
+    start = toDate(props.record?.data?._started?.[f.key]) || new Date()
+  } else {
+    start = toDate(entry?.[cfg.start])
+  }
   if (!start) return '选择起始日期后自动计算'
   let end = cfg.end ? toDate(entry?.[cfg.end]) : null
   if (!end) {
@@ -302,6 +314,26 @@ function diffText(f, entry) {
   }
   const days = Math.round((end - start) / 86400000)
   return humanDuration(days)
+}
+
+// 数字字段的小数位精度
+function numPrecision(f) {
+  const o = f.options && typeof f.options === 'object' ? f.options : {}
+  const p = Number(o.precision)
+  return Number.isFinite(p) && o.precision !== null && o.precision !== ''
+    ? Math.max(0, Math.min(6, Math.trunc(p))) : undefined
+}
+function numStep(f) {
+  const p = numPrecision(f)
+  return p === undefined ? 1 : Math.pow(10, -p)
+}
+
+// 联系方式格式：手机 / 座机 / 400 / 邮箱
+const CONTACT_RES = [/^1[3-9]\d{9}$/, /^(?:0\d{2,3}-?)?\d{7,8}(?:-\d{1,6})?$/,
+                     /^400-?\d{3}-?\d{4}$/, /^[\w.+-]+@[\w-]+(?:\.[\w-]+)+$/]
+function contactBad(v) {
+  return String(v || '').split(/[、,，;；/\n]+/).map(s => s.trim()).filter(Boolean)
+    .filter(t => !CONTACT_RES.some(re => re.test(t)))
 }
 
 // ---------------- 数量明细（总数 + 分项） ----------------
@@ -365,6 +397,17 @@ function fetchSuggest(key, q, cb) {
 }
 
 function rules(f) {
+  if (f.type === 'contact') {
+    return [{
+      validator: (rule, value, cb) => {
+        const bad = contactBad(value)
+        if (bad.length) return cb(new Error(`联系方式格式不正确：${bad.join('、')}`))
+        if (f.required && !String(value || '').trim()) return cb(new Error(`请填写${f.label}`))
+        cb()
+      },
+      trigger: ['blur', 'change']
+    }]
+  }
   if (!f.required || f.key === 'sn') return []
   return [{
     validator: (rule, value, cb) => {

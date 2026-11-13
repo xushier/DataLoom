@@ -13,7 +13,7 @@ tables_bp = Blueprint("tables", __name__)
 SELECT_TYPES = ("select", "multi_select", "radio", "checkbox", "color_tag")
 FIELD_TYPES = ("text", "textarea", "number", "select", "multi_select",
                "radio", "checkbox", "switch", "date", "datetime",
-               "color_tag", "rating", "date_diff", "quantity")
+               "color_tag", "rating", "date_diff", "quantity", "contact")
 DATE_TYPES = ("date", "datetime")
 COLOR_PALETTE = getattr(D, "COLOR_PALETTE", ["#5470c6", "#2f9e44", "#e8a33d"])
 
@@ -54,14 +54,27 @@ def norm_field_options(ftype, raw):
     if ftype == "date_diff":
         r = raw if isinstance(raw, dict) else {}
         vals = r.get("end_values")
+        svals = r.get("start_values")
         return {"start": str(r.get("start") or "").strip(),
                 "end": str(r.get("end") or "").strip(),
                 "end_field": str(r.get("end_field") or "").strip(),
-                "end_values": [str(v) for v in (vals or []) if str(v).strip()]}
+                "end_values": [str(v) for v in (vals or []) if str(v).strip()],
+                "start_field": str(r.get("start_field") or "").strip(),
+                "start_values": [str(v) for v in (svals or []) if str(v).strip()]}
     if ftype == "quantity":
         r = raw if isinstance(raw, dict) else {}
         return {"mode": "manual" if r.get("mode") == "manual" else "auto",
                 "unit": str(r.get("unit") or "").strip()[:8]}
+    if ftype == "number":
+        r = raw if isinstance(raw, dict) else {}
+        p = r.get("precision")
+        try:
+            p = int(p)
+        except (TypeError, ValueError):
+            p = None
+        return {"precision": min(6, max(0, p))} if p is not None else {}
+    if ftype == "contact":
+        return {}
     return [str(o).strip() for o in (raw or []) if str(o).strip()]
 
 
@@ -114,6 +127,25 @@ def _cond_met(value, values):
     return str(value if value is not None else "") in vals
 
 
+def date_diff_start(field, data):
+    """日期差值的起始日期：起始条件命中日 > 起始日期字段
+
+    返回 (起始日期|None, 是否处于计算状态)。
+    配置了起始条件但当前未命中时返回 (None, False)，表示未开始、按 0 天展示。
+    """
+    cfg = field.get("options") if isinstance(field.get("options"), dict) else {}
+    data = data or {}
+    if cfg.get("start_field") and cfg.get("start_values"):
+        if not _cond_met(data.get(cfg.get("start_field")), cfg.get("start_values")):
+            return None, False
+        started = data.get("_started")
+        if isinstance(started, dict):
+            sd = _to_date(started.get(field["key"]))
+            if sd is not None:
+                return sd, True
+    return _to_date(data.get(cfg.get("start") or "")), True
+
+
 def date_diff_end(field, data):
     """日期差值的结束日期：结束字段 > 终态冻结日 > 今天"""
     cfg = field.get("options") if isinstance(field.get("options"), dict) else {}
@@ -136,17 +168,49 @@ def calc_values(table, data):
     for f in table.get("fields") or []:
         if f.get("type") != "date_diff":
             continue
-        cfg = f.get("options") if isinstance(f.get("options"), dict) else {}
-        start = _to_date((data or {}).get(cfg.get("start") or ""))
+        start, active = date_diff_start(f, data)
+        if not active:
+            out[f["key"]] = {"days": 0, "text": "0 天", "pending": True}
+            continue
         if start is None:
             continue
         end, frozen = date_diff_end(f, data)
         days = (end - start).days
-        item = {"days": days, "text": human_duration(days)}
+        item = {"days": days, "text": human_duration(days),
+                "started": start.strftime("%Y-%m-%d")}
         if frozen:
             item["frozen"] = frozen
         out[f["key"]] = item
     return out
+
+
+def stamp_started(table, data, old_data=None, updated_at=None):
+    """命中起始条件时记录起始日，使日期差值从切换那一刻起算"""
+    today = D.now().strftime("%Y-%m-%d")
+    started = dict(data["_started"]) if isinstance(data.get("_started"), dict) else {}
+    old_data = old_data or {}
+    for f in table.get("fields") or []:
+        if f.get("type") != "date_diff":
+            continue
+        cfg = f.get("options") if isinstance(f.get("options"), dict) else {}
+        sf = cfg.get("start_field")
+        vals = cfg.get("start_values") or []
+        if not sf or not vals:
+            continue
+        if _cond_met(data.get(sf), vals):
+            if not started.get(f["key"]):
+                # 首次命中记为今天；历史数据（保存前已命中）沿用最后更新日
+                fb = today
+                if _cond_met(old_data.get(sf), vals):
+                    fb = str(updated_at or "")[:10] or today
+                started[f["key"]] = fb
+        else:
+            started.pop(f["key"], None)
+    if started:
+        data["_started"] = started
+    else:
+        data.pop("_started", None)
+    return data
 
 
 def stamp_frozen(table, data, old_data=None, updated_at=None):
@@ -260,11 +324,65 @@ def norm_quantity(field, raw):
 
 
 def norm_record_values(table, data):
-    """按字段类型规范化记录值（数量明细统一成结构体）"""
+    """按字段类型规范化记录值（数量明细统一成结构体、数字按精度取整）"""
     for f in table.get("fields") or []:
-        if f.get("type") == "quantity" and f["key"] in data:
+        if f["key"] not in data:
+            continue
+        if f.get("type") == "quantity":
             data[f["key"]] = norm_quantity(f, data[f["key"]])
+        elif f.get("type") == "number":
+            data[f["key"]] = norm_number(f, data[f["key"]])
+        elif f.get("type") == "contact":
+            data[f["key"]] = str(data[f["key"]] or "").strip()
     return data
+
+
+def num_precision(field):
+    cfg = field.get("options") if isinstance(field.get("options"), dict) else {}
+    try:
+        p = int(cfg.get("precision"))
+        return p if 0 <= p <= 6 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def norm_number(field, v):
+    """按字段配置的小数位取整；空值原样返回"""
+    if v is None or v == "":
+        return v
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return v
+    if n != n or n in (float("inf"), float("-inf")):
+        return v
+    p = num_precision(field)
+    if p is not None:
+        n = round(n, p)
+    return int(n) if n == int(n) else n
+
+
+# ---------------- 联系方式 ----------------
+
+CONTACT_SPLIT = re.compile(r"[、,，;；/\n]+")
+CONTACT_PATTERNS = (
+    re.compile(r"^1[3-9]\d{9}$"),                              # 手机
+    re.compile(r"^(?:0\d{2,3}-?)?\d{7,8}(?:-\d{1,6})?$"),      # 座机
+    re.compile(r"^400-?\d{3}-?\d{4}$"),                        # 400 热线
+    re.compile(r"^[\w.+-]+@[\w-]+(?:\.[\w-]+)+$"),             # 邮箱
+)
+
+
+def contact_bad_tokens(v):
+    """返回不符合常见通信方式格式的值（手机 / 座机 / 400 / 邮箱）"""
+    out = []
+    for t in CONTACT_SPLIT.split(str(v or "")):
+        t = t.strip()
+        if not t:
+            continue
+        if not any(p.match(t) for p in CONTACT_PATTERNS):
+            out.append(t)
+    return out
 
 
 def parse_qty_items(text):
@@ -518,6 +636,14 @@ def merge_options(table, data, user=""):
     return changed
 
 
+def contact_errors(table, data):
+    bad = []
+    for f in table.get("fields") or []:
+        if f.get("type") == "contact":
+            bad.extend(contact_bad_tokens((data or {}).get(f["key"])))
+    return bad
+
+
 def build_create_data(table, raw, existing_records=None):
     """规范化新记录数据：自动序号、自动申请时间"""
     fmap = field_map(table)
@@ -525,9 +651,13 @@ def build_create_data(table, raw, existing_records=None):
     for k, v in (raw or {}).items():
         if k in fmap:
             data[k] = v
-    # 数量明细：统一成 {total, items}
+    # 数量明细：统一成 {total, items}；数字按精度取整
     norm_record_values(table, data)
-    # 终态冻结日期（使日期差值停在结束那一刻）
+    bad = contact_errors(table, data)
+    if bad:
+        return None, f"联系方式格式不正确：{'、'.join(bad[:5])}"
+    # 起始条件命中日 / 终态冻结日期（使日期差值按条件起算与停止）
+    stamp_started(table, data)
     stamp_frozen(table, data)
     # 自动序号
     if "sn" in fmap:
@@ -751,6 +881,36 @@ def manage_field(fid):
     return jsonify(ok=True)
 
 
+@tables_bp.post("/tables/<int:tid>/fields/reorder")
+def reorder_fields(tid):
+    """按传入的字段 id 顺序重排（数据表列顺序与字段管理顺序一致）"""
+    if not g.is_admin():
+        return jsonify(ok=False, message="需要管理员权限"), 401
+    table = get_table(tid)
+    if not table:
+        return jsonify(ok=False, message="表不存在"), 404
+    body = request.get_json(force=True, silent=True) or {}
+    ids = body.get("ids")
+    if not isinstance(ids, list) or not ids:
+        return jsonify(ok=False, message="缺少字段顺序"), 400
+    exist = [f["id"] for f in table["fields"]]
+    ordered = []
+    for i in ids:
+        try:
+            i = int(i)
+        except (TypeError, ValueError):
+            continue
+        if i in exist and i not in ordered:
+            ordered.append(i)
+    ordered += [i for i in exist if i not in ordered]
+    for sort, fid in enumerate(ordered, 1):
+        D.execute("UPDATE fields SET sort=? WHERE id=? AND table_id=?",
+                  (sort, fid, tid))
+    D.log_op(g.req_user_name(), "field_reorder", tid, table["name"],
+             detail={"order": ordered})
+    return jsonify(ok=True)
+
+
 # ---------------- 可选值 ----------------
 
 @tables_bp.get("/tables/<int:tid>/options")
@@ -913,7 +1073,14 @@ def update_record(rid):
     data = {k: v for k, v in raw.items() if k in fmap}
     if isinstance(old.get("_frozen"), dict):
         data["_frozen"] = dict(old["_frozen"])  # 沿用已冻结日期
+    if isinstance(old.get("_started"), dict):
+        data["_started"] = dict(old["_started"])  # 沿用起始条件命中日
     norm_record_values(table, data)
+    bad = contact_errors(table, data)
+    if bad:
+        return jsonify(ok=False,
+                       message=f"联系方式格式不正确：{'、'.join(bad[:5])}"), 400
+    stamp_started(table, data, old_data=old, updated_at=r.get("updated_at"))
     stamp_frozen(table, data, old_data=old, updated_at=r.get("updated_at"))
     if "sn" in fmap:
         data["sn"] = old.get("sn")  # 序号不可改
