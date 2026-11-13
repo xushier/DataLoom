@@ -283,11 +283,23 @@ function toDate(v) {
   const d = new Date(`${s}T00:00:00`)
   return Number.isNaN(d.getTime()) ? null : d
 }
+function condMet(v, values) {
+  const set = new Set((values || []).map(String))
+  if (!set.size) return false
+  if (Array.isArray(v)) return v.some(x => set.has(String(x)))
+  return v !== null && v !== undefined && v !== '' && set.has(String(v))
+}
+
 function diffText(f, entry) {
   const cfg = f.options && typeof f.options === 'object' ? f.options : {}
   const start = toDate(entry?.[cfg.start])
   if (!start) return '选择起始日期后自动计算'
-  const end = cfg.end ? (toDate(entry?.[cfg.end]) || new Date()) : new Date()
+  let end = cfg.end ? toDate(entry?.[cfg.end]) : null
+  if (!end) {
+    const frozen = props.record?.data?._frozen?.[f.key]
+    const met = cfg.end_field && condMet(entry?.[cfg.end_field], cfg.end_values)
+    end = (met && frozen ? toDate(frozen) : null) || new Date()
+  }
   const days = Math.round((end - start) / 86400000)
   return humanDuration(days)
 }

@@ -111,9 +111,14 @@
                        :max="ratingMax(f)" disabled size="small" />
               <span v-else class="muted">—</span>
             </span>
-            <!-- 日期差值：后端实时计算 -->
-            <span v-else-if="f.type === 'date_diff'">
+            <!-- 日期差值：后端实时计算，命中终态后冻结 -->
+            <span v-else-if="f.type === 'date_diff'" class="dd-cell">
               {{ row.calc?.[f.key]?.text || '—' }}
+              <el-tooltip v-if="row.calc?.[f.key]?.frozen"
+                          :content="`结束于 ${row.calc[f.key].frozen}，已停止累加`"
+                          placement="top">
+                <span class="dd-frozen">已结束</span>
+              </el-tooltip>
             </span>
             <!-- 数量明细：总数 + 分项，悬停查看完整明细 -->
             <span v-else-if="f.type === 'quantity'" class="qty-cell">
@@ -661,7 +666,10 @@ function textWidth(t) {
 }
 function cellWidth(f, v, row) {
   if (f.type === 'rating') return ratingMax(f) * 17 + 14
-  if (f.type === 'date_diff') return textWidth(String(row?.calc?.[f.key]?.text || ''))
+  if (f.type === 'date_diff') {
+    const c = row?.calc?.[f.key]
+    return textWidth(String(c?.text || '')) + (c?.frozen ? 42 : 0)
+  }
   if (f.type === 'color_tag') return v ? textWidth(String(v)) + 32 : 0
   if (f.type === 'quantity') {
     const total = qtyTotal(v)
@@ -775,6 +783,12 @@ function fmtCell(v) {
 }
 .rating-cell :deep(.el-rate) { height: 18px; display: inline-flex; }
 .rating-cell :deep(.el-rate__icon) { font-size: 15px; margin-right: 2px; }
+
+/* 日期差值：终态后带「已结束」标记 */
+.dd-cell { display: inline-flex; align-items: center; gap: 5px; }
+.dd-frozen { font-size: 11px; line-height: 15px; padding: 0 5px; border-radius: 3px;
+             background: var(--el-fill-color); color: var(--el-text-color-secondary);
+             cursor: default; }
 
 /* 数量明细：总数 + 分项小签 */
 .qty-cell { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }

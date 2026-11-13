@@ -610,7 +610,25 @@
           </el-select>
           <div class="field-tip muted">留空则持续计算到今天（适合「进行中」的项目）</div>
         </el-form-item>
-        <!-- 数量明细：合计方式与单位 -->
+        <el-form-item v-if="fieldForm.type === 'date_diff'" label="终态条件">
+          <el-select v-model="fieldForm.ddStatus" clearable
+                     placeholder="不启用（一直计算到今天）" class="w-full"
+                     @change="onDdStatusChange">
+            <el-option v-for="f in statusFields" :key="f.key" :label="f.label" :value="f.key" />
+          </el-select>
+          <div class="field-tip muted">
+            结束日期留空时，命中终态即停止累加；需选择状态类字段
+          </div>
+        </el-form-item>
+        <el-form-item v-if="fieldForm.type === 'date_diff' && fieldForm.ddStatus" label="终态取值">
+          <el-select v-model="fieldForm.ddValues" multiple clearable
+                     placeholder="选择视为结束的取值" class="w-full">
+            <el-option v-for="v in ddValueOptions" :key="v" :label="v" :value="v" />
+          </el-select>
+          <div class="field-tip muted">
+            命中任一取值即视为结束，日期差值冻结在状态变更为终态的那一天
+          </div>
+        </el-form-item>
         <el-form-item v-if="fieldForm.type === 'quantity'" label="合计方式">
           <el-radio-group v-model="fieldForm.qtyMode">
             <el-radio value="auto" border size="small">按分项自动合计</el-radio>
@@ -921,7 +939,7 @@ const savingField = ref(false)
 const fieldForm = reactive({
   id: null, table_id: null, label: '', type: 'text', required: false,
   default_value: '', options: [], is_system: false,
-  colorList: [], ratingMax: 5, ddStart: '', ddEnd: '',
+  colorList: [], ratingMax: 5, ddStart: '', ddEnd: '', ddStatus: '', ddValues: [],
   qtyMode: 'auto', qtyUnit: ''
 })
 
@@ -961,7 +979,11 @@ function diffSummary(row) {
   const cfg = row.options && typeof row.options === 'object' ? row.options : {}
   const label = k => (fieldsTable.value?.fields || []).find(f => f.key === k)?.label || k
   if (!cfg.start) return ''
-  return `${label(cfg.start)} → ${cfg.end ? label(cfg.end) : '今天'}`
+  const s = `${label(cfg.start)} → ${cfg.end ? label(cfg.end) : '今天'}`
+  if (cfg.end_field && (cfg.end_values || []).length) {
+    return `${s}；终态冻结`
+  }
+  return s
 }
 function qtySummary(row) {
   const cfg = row.options && typeof row.options === 'object' ? row.options : {}
@@ -971,6 +993,15 @@ function qtySummary(row) {
 const dateFields = computed(() =>
   (fieldsTable.value?.fields || []).filter(f =>
     (f.type === 'date' || f.type === 'datetime') && f.id !== fieldForm.id))
+const STATUS_FIELD_TYPES = ['select', 'multi_select', 'radio', 'checkbox', 'color_tag']
+const statusFields = computed(() =>
+  (fieldsTable.value?.fields || []).filter(f =>
+    STATUS_FIELD_TYPES.includes(f.type) && f.id !== fieldForm.id))
+const ddValueOptions = computed(() => {
+  const f = (fieldsTable.value?.fields || []).find(x => x.key === fieldForm.ddStatus)
+  return f ? colorOptions(f).map(o => o.value) : []
+})
+function onDdStatusChange() { fieldForm.ddValues = [] }
 function colorTagFields(row) {
   return (row.fields || []).filter(f => f.type === 'color_tag')
 }
@@ -1056,6 +1087,8 @@ function openFieldEdit(f) {
       ratingMax: isRating ? ratingMaxOf(f) : 5,
       ddStart: isDiff ? (raw?.start || '') : '',
       ddEnd: isDiff ? (raw?.end || '') : '',
+      ddStatus: isDiff ? (raw?.end_field || '') : '',
+      ddValues: isDiff && Array.isArray(raw?.end_values) ? [...raw.end_values] : [],
       qtyMode: isQty && raw?.mode === 'manual' ? 'manual' : 'auto',
       qtyUnit: isQty ? (raw?.unit || '') : '',
       is_system: !!f.is_system
@@ -1064,7 +1097,7 @@ function openFieldEdit(f) {
     Object.assign(fieldForm, {
       id: null, table_id: fieldsTable.value.id, label: '', type: 'text',
       required: false, default_value: '', options: [], is_system: false,
-      colorList: [], ratingMax: 5, ddStart: '', ddEnd: '',
+      colorList: [], ratingMax: 5, ddStart: '', ddEnd: '', ddStatus: '', ddValues: [],
       qtyMode: 'auto', qtyUnit: ''
     })
   }
@@ -1083,7 +1116,9 @@ async function saveField() {
     options = { max: fieldForm.ratingMax }
   } else if (t === 'date_diff') {
     if (!fieldForm.ddStart) return ElMessage.warning('请选择起始日期字段')
-    options = { start: fieldForm.ddStart, end: fieldForm.ddEnd || '' }
+    options = { start: fieldForm.ddStart, end: fieldForm.ddEnd || '',
+                end_field: fieldForm.ddStatus || '',
+                end_values: fieldForm.ddStatus ? [...fieldForm.ddValues] : [] }
   } else if (t === 'quantity') {
     options = { mode: fieldForm.qtyMode === 'manual' ? 'manual' : 'auto',
                 unit: String(fieldForm.qtyUnit || '').trim() }

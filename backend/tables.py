@@ -53,8 +53,11 @@ def norm_field_options(ftype, raw):
         return {"max": min(10, max(3, m))}
     if ftype == "date_diff":
         r = raw if isinstance(raw, dict) else {}
+        vals = r.get("end_values")
         return {"start": str(r.get("start") or "").strip(),
-                "end": str(r.get("end") or "").strip()}
+                "end": str(r.get("end") or "").strip(),
+                "end_field": str(r.get("end_field") or "").strip(),
+                "end_values": [str(v) for v in (vals or []) if str(v).strip()]}
     if ftype == "quantity":
         r = raw if isinstance(raw, dict) else {}
         return {"mode": "manual" if r.get("mode") == "manual" else "auto",
@@ -101,6 +104,32 @@ def human_duration(days):
     return f"{years} 年 {months} 个月" if months else f"{years} 年"
 
 
+def _cond_met(value, values):
+    """记录值是否命中终态取值（兼容多选数组）"""
+    vals = {str(v) for v in (values or []) if str(v).strip()}
+    if not vals:
+        return False
+    if isinstance(value, list):
+        return any(str(v) in vals for v in value)
+    return str(value if value is not None else "") in vals
+
+
+def date_diff_end(field, data):
+    """日期差值的结束日期：结束字段 > 终态冻结日 > 今天"""
+    cfg = field.get("options") if isinstance(field.get("options"), dict) else {}
+    data = data or {}
+    end = _to_date(data.get(cfg.get("end") or "")) if cfg.get("end") else None
+    if end is not None:
+        return end, None
+    if cfg.get("end_field") and _cond_met(data.get(cfg["end_field"]), cfg.get("end_values")):
+        frozen = data.get("_frozen")
+        if isinstance(frozen, dict):
+            fz = _to_date(frozen.get(field["key"]))
+            if fz is not None:
+                return fz, fz.strftime("%Y-%m-%d")
+    return D.now().date(), None
+
+
 def calc_values(table, data):
     """计算字段取值：{key: {"days": 天数, "text": 可读文本}}"""
     out = {}
@@ -111,12 +140,43 @@ def calc_values(table, data):
         start = _to_date((data or {}).get(cfg.get("start") or ""))
         if start is None:
             continue
-        end = _to_date((data or {}).get(cfg.get("end") or "")) if cfg.get("end") else None
-        if end is None:
-            end = D.now().date()
+        end, frozen = date_diff_end(f, data)
         days = (end - start).days
-        out[f["key"]] = {"days": days, "text": human_duration(days)}
+        item = {"days": days, "text": human_duration(days)}
+        if frozen:
+            item["frozen"] = frozen
+        out[f["key"]] = item
     return out
+
+
+def stamp_frozen(table, data, old_data=None, updated_at=None):
+    """命中终态条件时记录冻结日期，使日期差值停在结束那一刻"""
+    today = D.now().strftime("%Y-%m-%d")
+    frozen = dict(data["_frozen"]) if isinstance(data.get("_frozen"), dict) else {}
+    old_data = old_data or {}
+    for f in table.get("fields") or []:
+        if f.get("type") != "date_diff":
+            continue
+        cfg = f.get("options") if isinstance(f.get("options"), dict) else {}
+        sf = cfg.get("end_field")
+        vals = cfg.get("end_values") or []
+        if not sf or not vals:
+            continue
+        if _cond_met(data.get(sf), vals):
+            if not frozen.get(f["key"]):
+                # 首次进入终态记为今天；若旧记录已是终态（历史数据）则沿用其最后更新日
+                fb = today
+                if _cond_met(old_data.get(sf), vals):
+                    fb = str(updated_at or "")[:10] or today
+                frozen[f["key"]] = fb
+        else:
+            frozen.pop(f["key"], None)
+    if frozen:
+        data["_frozen"] = frozen
+    else:
+        data.pop("_frozen", None)
+    return data
+
 
 
 def decorate(table, records):
@@ -467,6 +527,8 @@ def build_create_data(table, raw, existing_records=None):
             data[k] = v
     # 数量明细：统一成 {total, items}
     norm_record_values(table, data)
+    # 终态冻结日期（使日期差值停在结束那一刻）
+    stamp_frozen(table, data)
     # 自动序号
     if "sn" in fmap:
         sn = raw.get("sn")
@@ -849,7 +911,10 @@ def update_record(rid):
     raw = body.get("data") or {}
     fmap = field_map(table)
     data = {k: v for k, v in raw.items() if k in fmap}
+    if isinstance(old.get("_frozen"), dict):
+        data["_frozen"] = dict(old["_frozen"])  # 沿用已冻结日期
     norm_record_values(table, data)
+    stamp_frozen(table, data, old_data=old, updated_at=r.get("updated_at"))
     if "sn" in fmap:
         data["sn"] = old.get("sn")  # 序号不可改
     if "applicant" in fmap and u["role"] != "admin":
