@@ -10,11 +10,11 @@
             start-placeholder="开始" end-placeholder="结束"
             class="w-full" />
         </el-form-item>
-        <el-form-item v-else-if="f.type === 'number' || f.type === 'date_diff'" :label="f.label">
+        <el-form-item v-else-if="f.type === 'number' || f.type === 'date_diff' || f.type === 'quantity'" :label="f.label">
           <div class="fp-num">
-            <el-input-number v-model="draft[f.key][0]" :controls="false" :placeholder="f.type === 'date_diff' ? '最少天数' : '最小值'" class="w-full" />
+            <el-input-number v-model="draft[f.key][0]" :controls="false" :placeholder="f.type === 'date_diff' ? '最少天数' : f.type === 'quantity' ? '最少数量' : '最小值'" class="w-full" />
             <span class="muted">至</span>
-            <el-input-number v-model="draft[f.key][1]" :controls="false" :placeholder="f.type === 'date_diff' ? '最多天数' : '最大值'" class="w-full" />
+            <el-input-number v-model="draft[f.key][1]" :controls="false" :placeholder="f.type === 'date_diff' ? '最多天数' : f.type === 'quantity' ? '最多数量' : '最大值'" class="w-full" />
           </div>
         </el-form-item>
         <el-form-item v-else-if="isSelect(f.type)" :label="f.label">
@@ -70,7 +70,7 @@ function initDraft() {
   Object.keys(draft).forEach(k => delete draft[k])
   for (const f of editableFields.value) {
     if (isSelect(f.type)) draft[f.key] = []
-    else if (f.type === 'number' || f.type === 'date_diff') draft[f.key] = [undefined, undefined]
+    else if (f.type === 'number' || f.type === 'date_diff' || f.type === 'quantity') draft[f.key] = [undefined, undefined]
     else draft[f.key] = ''
   }
   // 回填已应用值
@@ -112,7 +112,7 @@ function apply() {
     const v = draft[f.key]
     if (isSelect(f.type)) {
       if (v && v.length) ops[f.key] = { op: 'in', value: v }
-    } else if (f.type === 'number' || f.type === 'date_diff') {
+    } else if (f.type === 'number' || f.type === 'date_diff' || f.type === 'quantity') {
       if (v[0] !== undefined && v[0] !== null || v[1] !== undefined && v[1] !== null) {
         ops[f.key] = { op: 'range', value: [v[0] ?? '', v[1] ?? ''] }
       }

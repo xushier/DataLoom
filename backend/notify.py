@@ -259,6 +259,8 @@ def _title_of(data):
         if s:
             return s
     for v in data.values():
+        if isinstance(v, dict):
+            continue
         s = str(v if v is not None else "").strip()
         if s:
             return s
@@ -267,6 +269,7 @@ def _title_of(data):
 
 def _display_lines(table, data, user):
     """按数据表字段顺序挑选最多 3 个非空字段作为正文"""
+    from .tables import quantity_text, qty_config
     lines = [("表　名", table["name"] if table else "—")]
     picked = 0
     for f in (table or {}).get("fields") or []:
@@ -275,6 +278,8 @@ def _display_lines(table, data, user):
         v = (data or {}).get(f["key"])
         if isinstance(v, list):
             v = "、".join(str(x) for x in v if str(x).strip())
+        elif isinstance(v, dict):
+            v = quantity_text(v, qty_config(f)["unit"])
         v = str(v if v is not None else "").strip()
         if not v:
             continue

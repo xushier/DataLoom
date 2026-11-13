@@ -2,6 +2,7 @@
 """Excel 导入导出（openpyxl）"""
 import io
 import json
+import re
 from datetime import datetime, date
 from urllib.parse import quote
 
@@ -34,35 +35,49 @@ def export_xlsx(table, records, template=False):
     ws = wb.active
     ws.title = (table["name"] or "数据")[:31]
     fields = sorted(table["fields"], key=lambda f: (f["sort"], f["id"]))
+    # 列定义：数量明细字段在主列（总数）之外再输出一列「明细」
+    cols = []
+    for f in fields:
+        cols.append((f["label"], f, "value"))
+        if f["type"] == "quantity":
+            cols.append((f"{f['label']}（明细）", f, "qty_detail"))
 
     thin = Side(style="thin", color="D6DEE6")
     border = Border(left=thin, right=thin, top=thin, bottom=thin)
     # 表头
-    for c, f in enumerate(fields, 1):
-        cell = ws.cell(row=1, column=c, value=f["label"])
+    for c, (title, f, kind) in enumerate(cols, 1):
+        cell = ws.cell(row=1, column=c, value=title)
         cell.font = Font(bold=True, color="FFFFFF", size=11)
         cell.fill = PatternFill("solid", fgColor=HEADER_FILL)
         cell.alignment = Alignment(horizontal="center", vertical="center")
         cell.border = border
-        ws.column_dimensions[get_column_letter(c)].width = max(10, min(26, len(f["label"]) * 2.4 + 4))
+        ws.column_dimensions[get_column_letter(c)].width = max(10, min(26, len(title) * 2.4 + 4))
     ws.row_dimensions[1].height = 26
     ws.freeze_panes = "A2"
     if not template:
-        from .tables import calc_values
+        from .tables import calc_values, qty_items, qty_total
         for r_i, r in enumerate(records, 2):
             calc = calc_values(table, r["data"])
-            for c, f in enumerate(fields, 1):
+            for c, (title, f, kind) in enumerate(cols, 1):
                 val = r["data"].get(f["key"])
                 if f["type"] == "date_diff":
                     cv = calc.get(f["key"]) or {}
                     val = cv.get("text", "")
+                elif f["type"] == "quantity":
+                    if kind == "qty_detail":
+                        val = "；".join(f"{it['name']} {it['qty']}"
+                                       for it in qty_items(val))
+                    else:
+                        val = qty_total(val)
+                        if val is None:
+                            val = ""
                 cell = ws.cell(row=r_i, column=c, value=_cell_str(val))
                 cell.border = border
                 cell.alignment = Alignment(horizontal="left", vertical="center")
                 if f["key"] == "sn":
                     cell.alignment = Alignment(horizontal="center", vertical="center")
             if r_i % 2 == 0:
-                for c in range(1, len(fields) + 1):
+                for c in range(1, len(cols) + 1):
                     if ws.cell(row=r_i, column=c).fill.fgColor.rgb in (None, "00000000"):
                         ws.cell(row=r_i, column=c).fill = PatternFill("solid", fgColor="F5F8FB")
 
@@ -99,11 +114,18 @@ def import_xlsx(table, f):
                 "ignored_columns": []}
 
     headers = [str(h or "").strip() for h in rows[0]]
-    col_field, ignored = {}, []
+    col_field, detail_field, ignored = {}, {}, []
     for idx, h in enumerate(headers):
         fl = label_map.get(h.lower())
         if fl is None:
             fl = key_map.get(h.lower())
+        if fl is None and h:
+            # 「数量（明细）」列：作为对应数量明细字段的分项文本
+            base = re.sub(r"[（(]?\s*明细\s*[）)]?$", "", h).strip().lower()
+            bf = label_map.get(base) or key_map.get(base)
+            if bf is not None and bf["type"] == "quantity":
+                detail_field[idx] = bf
+                continue
         if fl is not None and fl["type"] == "date_diff":
             # 计算字段不入库，导入时忽略该列
             ignored.append(h)
@@ -112,7 +134,7 @@ def import_xlsx(table, f):
         elif h:
             ignored.append(h)
 
-    from .tables import do_create_record, merge_options
+    from .tables import do_create_record, merge_options, parse_qty_items, parse_quantity_cell
     added, failed = 0, []
     for r_i, row in enumerate(rows[1:], 2):
         if row is None or all(v is None or str(v).strip() == "" for v in row):
@@ -127,9 +149,23 @@ def import_xlsx(table, f):
                         v = int(float(v)) if str(v) not in ("", None) else ""
                     except (TypeError, ValueError):
                         pass
+                if fl["type"] == "quantity":
+                    v = parse_quantity_cell(v)
                 if fl["type"] == "switch":
                     v = 1 if str(v).lower() in ("1", "true", "是", "y", "yes", "on") else 0
                 data[fl["key"]] = "" if v is None else v
+        # 明细列：合并进对应数量字段，总数留空时由后端按分项合计
+        for idx, fl in detail_field.items():
+            if idx >= len(row):
+                continue
+            items = parse_qty_items(_cell_str(row[idx]))
+            if not items:
+                continue
+            cur = data.get(fl["key"])
+            base = cur if isinstance(cur, dict) else {"total": None, "items": []}
+            if not base.get("items"):
+                base["items"] = items
+            data[fl["key"]] = base
         record, err = do_create_record(table, data, "导入")
         if err:
             failed.append({"row": r_i, "reason": err})

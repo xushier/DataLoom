@@ -86,6 +86,37 @@
                           disabled>
                   <template #suffix><span class="muted">自动</span></template>
                 </el-input>
+                <!-- 数量明细：总数 + 分项 -->
+                <div v-else-if="f.type === 'quantity'" class="qty-box">
+                  <div class="qty-head">
+                    <span class="qty-label">合计</span>
+                    <el-input-number v-if="qtyCfg(f).mode === 'manual'" v-model="e[f.key].total"
+                                     :controls="false" :min="0" class="qty-total-input"
+                                     placeholder="总数" />
+                    <span v-else class="qty-total">{{ qtySum(e[f.key]) }}</span>
+                    <span v-if="qtyCfg(f).unit" class="qty-unit">{{ qtyCfg(f).unit }}</span>
+                    <span v-if="qtyCfg(f).mode === 'manual' && qtyDiff(f, e[f.key])"
+                          class="qty-diff muted">
+                      明细合计 {{ qtySum(e[f.key]) }}，差额 {{ qtyDiff(f, e[f.key]) }} 未分配
+                    </span>
+                    <span v-else class="qty-hint muted">
+                      {{ qtyCfg(f).mode === 'auto' ? '按分项自动合计' : '可包含未分配部分' }}
+                    </span>
+                  </div>
+                  <div class="qty-rows">
+                    <div v-for="(it, qi) in e[f.key].items" :key="qi" class="qty-row">
+                      <el-input v-model="it.name" placeholder="分项名称" maxlength="20" />
+                      <el-input-number v-model="it.qty" :controls="false" :min="0"
+                                       class="qty-num" placeholder="数量" />
+                      <el-button link type="danger"
+                                 @click="e[f.key].items.splice(qi, 1)">删除</el-button>
+                    </div>
+                    <el-button size="small" class="qty-add"
+                               @click="e[f.key].items.push({ name: '', qty: null })">
+                      ＋ 添加分项
+                    </el-button>
+                  </div>
+                </div>
                 <!-- 复选组：平铺多选 -->
                 <el-checkbox-group v-else-if="f.type === 'checkbox'" v-model="e[f.key]">
                   <el-checkbox v-for="o in optValues(f.key)" :key="o" :value="o" border
@@ -261,6 +292,58 @@ function diffText(f, entry) {
   return humanDuration(days)
 }
 
+// ---------------- 数量明细（总数 + 分项） ----------------
+
+function qtyCfg(f) {
+  const o = f.options && typeof f.options === 'object' ? f.options : {}
+  return { mode: o.mode === 'manual' ? 'manual' : 'auto', unit: o.unit || '' }
+}
+function normQty(v) {
+  if (v && typeof v === 'object' && !Array.isArray(v)) {
+    const items = (Array.isArray(v.items) ? v.items : []).map(it => ({
+      name: String(it?.name ?? ''),
+      qty: it?.qty === '' || it?.qty === undefined ? null : Number(it.qty)
+    }))
+    return { total: v.total === '' || v.total === undefined ? null : Number(v.total), items }
+  }
+  const n = Number(v)
+  const ok = v !== '' && v !== null && v !== undefined && Number.isFinite(n)
+  return { total: ok ? n : null, items: [] }
+}
+function qtySum(v) {
+  return (v?.items || []).reduce((s, it) => s + (Number(it.qty) || 0), 0)
+}
+function qtyDiff(f, v) {
+  if (qtyCfg(f).mode !== 'manual') return 0
+  const t = Number(v?.total)
+  if (!Number.isFinite(t)) return 0
+  const d = Math.round((t - qtySum(v)) * 1000) / 1000
+  return d > 0 ? d : 0
+}
+// 粘贴/导入用：「64（远控 2，接地刀闸 16）」或纯数字
+function parseQtyText(text) {
+  const s = String(text || '').trim()
+  if (!s) return null
+  let total = null
+  let inner = ''
+  const m = s.match(/^([\d.]+)\s*[（(](.*)[）)]\s*$/)
+  if (m) { total = Number(m[1]); inner = m[2] }
+  else if (/^[\d.]+$/.test(s)) total = Number(s)
+  else inner = s
+  const items = []
+  for (const seg of inner.split(/[；;，,、]/)) {
+    const t = seg.trim()
+    if (!t) continue
+    const mm = t.match(/^(.+?)\s*[×xX*]?\s*([\d.]+)\s*[^\d]*$/)
+    if (!mm) continue
+    const name = mm[1].trim()
+    const qty = Number(mm[2])
+    if (name && Number.isFinite(qty)) items.push({ name, qty })
+  }
+  if (total === null && !items.length) return null
+  return { total, items }
+}
+
 // 单选字段建议：点击进入时原值保留可直接续改，输入时弹出过滤建议
 function fetchSuggest(key, q, cb) {
   const list = key === 'applicant' ? applicantOptions(key) : optValues(key)
@@ -273,6 +356,12 @@ function rules(f) {
   if (!f.required || f.key === 'sn') return []
   return [{
     validator: (rule, value, cb) => {
+      if (f.type === 'quantity') {
+        const total = Number(value?.total)
+        const hasItems = (value?.items || []).some(it => String(it.name || '').trim())
+        if (hasItems || (Number.isFinite(total) && total > 0)) return cb()
+        return cb(new Error(`请填写${f.label}`))
+      }
       const v = Array.isArray(value) ? value.length : value
       if (v === '' || v === null || v === undefined) {
         cb(new Error(`请填写${f.label}`))
@@ -294,6 +383,7 @@ function blankEntry() {
     }
     if (f.type === 'switch') v = v === '1' || v === 1 || v === true
     if (f.type === 'rating') v = Number(v) || 0
+    if (f.type === 'quantity') v = normQty(v)
     if (f.type === 'date_diff') v = ''
     e[f.key] = v ?? (f.type === 'switch' ? false : null)
   }
@@ -330,6 +420,7 @@ function castVal(f, v) {
     return Number.isNaN(n) ? 0 : Math.max(0, Math.min(ratingMax(f), n))
   }
   if (f.type === 'date_diff') return ''
+  if (f.type === 'quantity') return parseQtyText(v) || { total: null, items: [] }
   if (f.type === 'switch') return /^(是|真|1|y|yes|true|√|开)$/i.test(v)
   if (f.type === 'number') {
     const n = parseFloat(v)
@@ -446,6 +537,10 @@ function copyPrev(i) {
     const v = src[f.key]
     if (v === null || v === undefined || v === '') continue
     if (Array.isArray(v) && !v.length) continue
+    if (f.type === 'quantity') {
+      dst[f.key] = { total: v?.total ?? null, items: (v?.items || []).map(it => ({ ...it })) }
+      continue
+    }
     dst[f.key] = Array.isArray(v) ? [...v] : v
   }
   entryErrs.value[i] = ''
@@ -457,6 +552,20 @@ function entryPayload(e) {
   const data = {}
   for (const f of fields.value) {
     if (f.key === 'sn' || f.type === 'date_diff') continue
+    if (f.type === 'quantity') {
+      const cfg = qtyCfg(f)
+      const items = (e[f.key]?.items || [])
+        .map(it => ({ name: String(it.name || '').trim(), qty: Number(it.qty) }))
+        .filter(it => it.name && it.qty !== null && Number.isFinite(it.qty))
+      const sum = items.reduce((s, it) => s + it.qty, 0)
+      const total = cfg.mode === 'auto' ? sum : Number(e[f.key]?.total)
+      if (!items.length && !(Number.isFinite(total) && total > 0)) {
+        data[f.key] = null
+        continue
+      }
+      data[f.key] = { total: Number.isFinite(total) ? total : sum, items }
+      continue
+    }
     data[f.key] = e[f.key]
   }
   return data
@@ -536,4 +645,22 @@ async function onSubmit() {
 .ct-badge { display: inline-block; padding: 3px 12px; border-radius: 6px;
             font-size: 13px; font-weight: 600; white-space: nowrap; }
 .rating-line { display: flex; align-items: center; gap: 10px; }
+
+/* 数量明细 */
+.qty-box { width: 100%; border: 1px solid var(--el-border-color-lighter);
+           border-radius: 8px; padding: 8px 10px; background: var(--el-fill-color-blank); }
+.qty-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+            padding-bottom: 6px; border-bottom: 1px dashed var(--el-border-color-lighter); }
+.qty-label { font-size: 12px; color: var(--el-text-color-secondary); }
+.qty-total { font-size: 18px; font-weight: 700; font-variant-numeric: tabular-nums;
+             color: var(--el-text-color-primary); line-height: 1; }
+.qty-total-input { width: 96px; }
+.qty-unit { font-size: 12px; color: var(--el-text-color-secondary); }
+.qty-diff { color: var(--el-color-warning); font-size: 12px; }
+.qty-hint { font-size: 12px; }
+.qty-rows { padding-top: 6px; display: flex; flex-direction: column; gap: 6px; }
+.qty-row { display: flex; align-items: center; gap: 6px; }
+.qty-row :deep(.el-input) { flex: 1; }
+.qty-num { width: 88px; flex: none !important; }
+.qty-add { width: 100%; border-style: dashed; margin-top: 2px; }
 </style>

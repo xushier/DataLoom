@@ -115,6 +115,34 @@
             <span v-else-if="f.type === 'date_diff'">
               {{ row.calc?.[f.key]?.text || '—' }}
             </span>
+            <!-- 数量明细：总数 + 分项，悬停查看完整明细 -->
+            <span v-else-if="f.type === 'quantity'" class="qty-cell">
+              <template v-if="qtyTotal(row.data[f.key]) !== null">
+                <span class="qty-total">
+                  {{ fmtNum(qtyTotal(row.data[f.key])) }}<em v-if="qtyUnit(f)" class="qty-unit">{{ qtyUnit(f) }}</em>
+                </span>
+                <el-popover v-if="qtyItems(row.data[f.key]).length" placement="top"
+                            :width="240" trigger="hover" popper-class="qty-pop">
+                  <template #reference>
+                    <span class="qty-chips">
+                      <span v-for="it in qtyItems(row.data[f.key]).slice(0, 2)" :key="it.name"
+                            class="qty-chip">{{ it.name }} {{ fmtNum(it.qty) }}</span>
+                      <span v-if="qtyItems(row.data[f.key]).length > 2" class="qty-more">
+                        +{{ qtyItems(row.data[f.key]).length - 2 }}
+                      </span>
+                    </span>
+                  </template>
+                  <div class="qty-pop-head">
+                    明细 · 合计 {{ fmtNum(qtyTotal(row.data[f.key])) }}{{ qtyUnit(f) }}
+                  </div>
+                  <div v-for="it in qtyItems(row.data[f.key])" :key="it.name" class="qty-pop-row">
+                    <span class="qty-pop-name">{{ it.name }}</span>
+                    <span class="tabular">{{ fmtNum(it.qty) }}</span>
+                  </div>
+                </el-popover>
+              </template>
+              <span v-else class="muted">—</span>
+            </span>
             <template v-else-if="Array.isArray(row.data[f.key])">
               <template v-if="row.data[f.key].length">
                 <el-tag v-for="v in row.data[f.key]" :key="v" size="small" effect="plain"
@@ -332,6 +360,28 @@ function badgeStyle(color) {
 function ratingMax(f) {
   const m = f.options && typeof f.options === 'object' ? Number(f.options.max) : 5
   return Number.isFinite(m) && m >= 3 ? m : 5
+}
+
+/* ---------------- 数量明细 ---------------- */
+
+function qtyUnit(f) {
+  const o = f.options && typeof f.options === 'object' ? f.options : {}
+  return o.unit || ''
+}
+function qtyTotal(v) {
+  if (v === null || v === undefined || v === '') return null
+  const n = typeof v === 'object' ? Number(v.total) : Number(v)
+  return Number.isFinite(n) ? n : null
+}
+function qtyItems(v) {
+  return v && typeof v === 'object' && Array.isArray(v.items)
+    ? v.items.filter(it => it && String(it.name || '').trim())
+    : []
+}
+function fmtNum(n) {
+  if (n === null || n === undefined || n === '') return '—'
+  const num = Number(n)
+  return Number.isInteger(num) ? String(num) : String(num)
 }
 
 /* ---------------- 数据加载 ---------------- */
@@ -613,6 +663,15 @@ function cellWidth(f, v, row) {
   if (f.type === 'rating') return ratingMax(f) * 17 + 14
   if (f.type === 'date_diff') return textWidth(String(row?.calc?.[f.key]?.text || ''))
   if (f.type === 'color_tag') return v ? textWidth(String(v)) + 32 : 0
+  if (f.type === 'quantity') {
+    const total = qtyTotal(v)
+    if (total === null) return 0
+    let w = textWidth(String(total)) + textWidth(qtyUnit(f)) + 34
+    const items = qtyItems(v).slice(0, 2)
+    for (const it of items) w += textWidth(`${it.name} ${it.qty}`) + 22
+    if (qtyItems(v).length > 2) w += 26
+    return w
+  }
   if (v === null || v === undefined || v === '') return 0
   if (Array.isArray(v)) {
     // 多选标签：每个标签自带内边距、边框与间距
@@ -716,6 +775,25 @@ function fmtCell(v) {
 }
 .rating-cell :deep(.el-rate) { height: 18px; display: inline-flex; }
 .rating-cell :deep(.el-rate__icon) { font-size: 15px; margin-right: 2px; }
+
+/* 数量明细：总数 + 分项小签 */
+.qty-cell { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }
+.qty-total { font-weight: 700; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.qty-unit { font-style: normal; font-size: 12px; font-weight: 400; margin-left: 2px;
+            color: var(--el-text-color-secondary); }
+.qty-chips { display: inline-flex; align-items: center; gap: 4px; cursor: default; }
+.qty-chip { font-size: 11px; line-height: 16px; padding: 0 6px; border-radius: 4px;
+            background: var(--el-fill-color); color: var(--el-text-color-regular);
+            white-space: nowrap; }
+.qty-more { font-size: 11px; color: var(--el-text-color-secondary); }
+:global(.qty-pop) { padding: 10px 12px; }
+:global(.qty-pop .qty-pop-head) { font-size: 12px; color: var(--el-text-color-secondary);
+                                  padding-bottom: 6px; margin-bottom: 4px;
+                                  border-bottom: 1px solid var(--el-border-color-lighter); }
+:global(.qty-pop .qty-pop-row) { display: flex; justify-content: space-between; gap: 16px;
+                                 font-size: 13px; line-height: 22px; }
+:global(.qty-pop .qty-pop-name) { overflow: hidden; text-overflow: ellipsis;
+                                  white-space: nowrap; }
 
 /* 行色条：左侧 4px 竖条跟随表级配置的彩色标签字段 */
 .dc-table :deep(.el-table__body tr.row-colored td.el-table__cell:first-child) {

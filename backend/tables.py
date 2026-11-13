@@ -13,7 +13,7 @@ tables_bp = Blueprint("tables", __name__)
 SELECT_TYPES = ("select", "multi_select", "radio", "checkbox", "color_tag")
 FIELD_TYPES = ("text", "textarea", "number", "select", "multi_select",
                "radio", "checkbox", "switch", "date", "datetime",
-               "color_tag", "rating", "date_diff")
+               "color_tag", "rating", "date_diff", "quantity")
 DATE_TYPES = ("date", "datetime")
 COLOR_PALETTE = getattr(D, "COLOR_PALETTE", ["#5470c6", "#2f9e44", "#e8a33d"])
 
@@ -55,6 +55,10 @@ def norm_field_options(ftype, raw):
         r = raw if isinstance(raw, dict) else {}
         return {"start": str(r.get("start") or "").strip(),
                 "end": str(r.get("end") or "").strip()}
+    if ftype == "quantity":
+        r = raw if isinstance(raw, dict) else {}
+        return {"mode": "manual" if r.get("mode") == "manual" else "auto",
+                "unit": str(r.get("unit") or "").strip()[:8]}
     return [str(o).strip() for o in (raw or []) if str(o).strip()]
 
 
@@ -122,6 +126,122 @@ def decorate(table, records):
     return records
 
 
+# ---------------- 数量明细 ----------------
+
+def qty_config(field):
+    """数量明细字段配置：合计方式与单位"""
+    cfg = field.get("options") if isinstance(field.get("options"), dict) else {}
+    return {"mode": "manual" if cfg.get("mode") == "manual" else "auto",
+            "unit": str(cfg.get("unit") or "")}
+
+
+def _num(v):
+    try:
+        n = float(v)
+    except (TypeError, ValueError):
+        return None
+    if n != n or n in (float("inf"), float("-inf")):
+        return None
+    return int(n) if n == int(n) else round(n, 3)
+
+
+def qty_total(v):
+    """数量明细的总数，兼容纯数字旧值"""
+    if isinstance(v, dict):
+        return _num(v.get("total"))
+    return _num(v)
+
+
+def qty_items(v):
+    """数量明细的分项列表 [{name, qty}]"""
+    if not isinstance(v, dict):
+        return []
+    out = []
+    for it in v.get("items") or []:
+        if not isinstance(it, dict):
+            continue
+        name = str(it.get("name") or "").strip()
+        qty = _num(it.get("qty"))
+        if name and qty is not None:
+            out.append({"name": name[:20], "qty": qty})
+    return out[:30]
+
+
+def quantity_text(v, unit=""):
+    """数量明细的可读文本：64 套（远控 2；接地刀闸 16）"""
+    total = qty_total(v)
+    if total is None:
+        return ""
+    u = f" {unit}" if unit else ""
+    items = qty_items(v)
+    if not items:
+        return f"{total}{u}"
+    inner = "；".join(f"{it['name']} {it['qty']}" for it in items)
+    return f"{total}{u}（{inner}）"
+
+
+def norm_quantity(field, raw):
+    """记录中的数量明细值：{total, items}；空值返回 None"""
+    if raw is None or raw == "":
+        return None
+    cfg = qty_config(field)
+    total = qty_total(raw)
+    items = qty_items(raw)
+    if cfg["mode"] == "auto":
+        # 自动合计：总数始终等于分项之和
+        total = sum(it["qty"] for it in items) if items else total
+    elif total is None:
+        total = sum(it["qty"] for it in items) if items else None
+    if total is None and not items:
+        return None
+    if total is None:
+        total = 0
+    return {"total": total, "items": items}
+
+
+def norm_record_values(table, data):
+    """按字段类型规范化记录值（数量明细统一成结构体）"""
+    for f in table.get("fields") or []:
+        if f.get("type") == "quantity" and f["key"] in data:
+            data[f["key"]] = norm_quantity(f, data[f["key"]])
+    return data
+
+
+def parse_qty_items(text):
+    """「远控 2；接地刀闸 16 套」-> [{name, qty}]"""
+    out = []
+    for seg in re.split(r"[；;，,、]", str(text or "")):
+        seg = seg.strip()
+        if not seg:
+            continue
+        m = re.match(r"^(.+?)\s*[×xX*]?\s*([\d.]+)\s*[^\d]*$", seg)
+        if not m:
+            continue
+        name = m.group(1).strip()
+        qty = _num(m.group(2))
+        if name and qty is not None:
+            out.append({"name": name[:20], "qty": qty})
+    return out
+
+
+def parse_quantity_cell(text):
+    """导入用：解析「64（远控 2，接地刀闸 16）」或纯数字"""
+    s = str(text if text is not None else "").strip()
+    if not s:
+        return None
+    m = re.match(r"^([\d.]+)\s*(?:[（(](.*)[）)])?\s*$", s)
+    total, inner = None, ""
+    if m:
+        total = _num(m.group(1))
+        inner = m.group(2) or ""
+    else:
+        inner = s
+    items = parse_qty_items(inner) if inner else []
+    if total is None and not items:
+        return None
+    return {"total": total, "items": items}
+
+
 # ---------------- 工具 ----------------
 
 def get_table(tid):
@@ -186,8 +306,14 @@ def apply_query(records, table, args):
         data = r["data"]
         # 全局搜索
         if kw:
-            hay = " ".join(
-                str(data.get(k, "")) for k in fmap) + " " + r.get("created_at", "")
+            parts = []
+            for k, f in fmap.items():
+                v = data.get(k)
+                if f["type"] == "quantity":
+                    parts.append(quantity_text(v, qty_config(f)["unit"]))
+                else:
+                    parts.append(str(v if v is not None else ""))
+            hay = " ".join(parts) + " " + r.get("created_at", "")
             if kw not in hay.lower():
                 continue
         # 字段筛选
@@ -197,8 +323,18 @@ def apply_query(records, table, args):
                 continue
             op = cond.get("op")
             val = cond.get("value")
-            if fmap.get(key, {}).get("type") == "date_diff":
+            ftype = fmap.get(key, {}).get("type")
+            if ftype == "date_diff":
                 target = (r.get("calc") or {}).get(key, {}).get("days", "")
+            elif ftype == "quantity":
+                # 区间按总数比较，其余按可读文本匹配
+                if op == "range":
+                    target = qty_total(data.get(key))
+                    if target is None:
+                        target = ""
+                else:
+                    target = quantity_text(data.get(key),
+                                           qty_config(fmap[key])["unit"])
             else:
                 target = data.get(key, "")
             tstr = str(target if target is not None else "")
@@ -252,6 +388,9 @@ def apply_query(records, table, args):
     elif sort in fmap and fmap[sort]["type"] == "date_diff":
         result.sort(key=lambda r: (r.get("calc") or {}).get(sort, {}).get("days", -1),
                     reverse=(order == "desc"))
+    elif sort in fmap and fmap[sort]["type"] == "quantity":
+        result.sort(key=lambda r: sort_key(qty_total(r["data"].get(sort))),
+                    reverse=(order == "desc"))
     elif sort in fmap:
         result.sort(key=lambda r: sort_key(r["data"].get(sort)),
                     reverse=(order == "desc"))
@@ -277,6 +416,8 @@ def record_title(data):
         if s:
             return s
     for v in data.values():
+        if isinstance(v, dict):
+            continue
         s = str(v if v is not None else "").strip()
         if s:
             return s
@@ -324,6 +465,8 @@ def build_create_data(table, raw, existing_records=None):
     for k, v in (raw or {}).items():
         if k in fmap:
             data[k] = v
+    # 数量明细：统一成 {total, items}
+    norm_record_values(table, data)
     # 自动序号
     if "sn" in fmap:
         sn = raw.get("sn")
@@ -706,6 +849,7 @@ def update_record(rid):
     raw = body.get("data") or {}
     fmap = field_map(table)
     data = {k: v for k, v in raw.items() if k in fmap}
+    norm_record_values(table, data)
     if "sn" in fmap:
         data["sn"] = old.get("sn")  # 序号不可改
     if "applicant" in fmap and u["role"] != "admin":

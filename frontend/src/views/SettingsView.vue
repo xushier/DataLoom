@@ -534,6 +534,9 @@
                         :content="diffSummary(row) || '未指定起止字段'" placement="top">
               <span class="muted">{{ diffSummary(row) || '未配置' }}</span>
             </el-tooltip>
+            <el-tooltip v-else-if="row.type === 'quantity'" :content="qtySummary(row)" placement="top">
+              <span class="muted">{{ qtySummary(row) }}</span>
+            </el-tooltip>
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
@@ -607,6 +610,19 @@
           </el-select>
           <div class="field-tip muted">留空则持续计算到今天（适合「进行中」的项目）</div>
         </el-form-item>
+        <!-- 数量明细：合计方式与单位 -->
+        <el-form-item v-if="fieldForm.type === 'quantity'" label="合计方式">
+          <el-radio-group v-model="fieldForm.qtyMode">
+            <el-radio value="auto" border size="small">按分项自动合计</el-radio>
+            <el-radio value="manual" border size="small">手动填总数</el-radio>
+          </el-radio-group>
+          <div class="field-tip muted">
+            自动合计时总数恒等于分项之和；手动填写时总数可大于分项之和（余额视为未分配）
+          </div>
+        </el-form-item>
+        <el-form-item v-if="fieldForm.type === 'quantity'" label="单位">
+          <el-input v-model="fieldForm.qtyUnit" maxlength="8" placeholder="如：套、面、个，可留空" />
+        </el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="fieldOpen = false">取 消</el-button>
@@ -679,7 +695,8 @@ const FIELD_TYPES = {
   text: '文本', textarea: '多行文本', number: '数字', select: '可搜索下拉',
   multi_select: '多选下拉', radio: '单选组', checkbox: '复选组', switch: '开关',
   date: '日期', datetime: '日期时间',
-  color_tag: '彩色标签', rating: '评分', date_diff: '日期差值'
+  color_tag: '彩色标签', rating: '评分', date_diff: '日期差值',
+  quantity: '数量明细'
 }
 const FIELD_TIPS = {
   select: '可搜索，输入新值会自动加入可选值',
@@ -689,6 +706,7 @@ const FIELD_TIPS = {
   color_tag: '单选 + 每个选项自定义颜色，可为空；可指定用于行首色条',
   rating: '点击星星打分，存数字，可排序与求平均',
   date_diff: '自动计算两个日期间的天数，并以「天 / 个月 / 年」显示',
+  quantity: '总数 + 一层分项明细，可统计总数；明细仅展开查看，不参与拆分统计',
   switch: '开关，存 1 / 0',
   date: '日期',
   datetime: '日期时间',
@@ -903,14 +921,17 @@ const savingField = ref(false)
 const fieldForm = reactive({
   id: null, table_id: null, label: '', type: 'text', required: false,
   default_value: '', options: [], is_system: false,
-  colorList: [], ratingMax: 5, ddStart: '', ddEnd: ''
+  colorList: [], ratingMax: 5, ddStart: '', ddEnd: '',
+  qtyMode: 'auto', qtyUnit: ''
 })
 
 const PRESET_COLORS = ['#2f9e44', '#e8a33d', '#d94b4b', '#5470c6',
                        '#13a8a8', '#8f5bd6', '#d969a8', '#6b7a8f']
 const FALLBACK_COLORS = PRESET_COLORS
 
-function isSpecialType(t) { return ['color_tag', 'rating', 'date_diff'].includes(t) }
+function isSpecialType(t) {
+  return ['color_tag', 'rating', 'date_diff', 'quantity'].includes(t)
+}
 
 function colorOptions(f) {
   return (f.options || []).map((o, i) => (o && typeof o === 'object'
@@ -941,6 +962,11 @@ function diffSummary(row) {
   const label = k => (fieldsTable.value?.fields || []).find(f => f.key === k)?.label || k
   if (!cfg.start) return ''
   return `${label(cfg.start)} → ${cfg.end ? label(cfg.end) : '今天'}`
+}
+function qtySummary(row) {
+  const cfg = row.options && typeof row.options === 'object' ? row.options : {}
+  const mode = cfg.mode === 'manual' ? '手动总数' : '自动合计'
+  return cfg.unit ? `${mode} · 单位 ${cfg.unit}` : `${mode} · 无单位`
 }
 const dateFields = computed(() =>
   (fieldsTable.value?.fields || []).filter(f =>
@@ -1021,21 +1047,25 @@ function openFieldEdit(f) {
     const isColor = f.type === 'color_tag'
     const isRating = f.type === 'rating'
     const isDiff = f.type === 'date_diff'
+    const isQty = f.type === 'quantity'
     Object.assign(fieldForm, {
       id: f.id, table_id: fieldsTable.value.id, label: f.label, type: f.type,
       required: !!f.required, default_value: f.default_value || '',
-      options: (isColor || isRating || isDiff) ? [] : [...(raw || [])],
+      options: (isColor || isRating || isDiff || isQty) ? [] : [...(raw || [])],
       colorList: isColor ? colorOptions(f).map(o => ({ ...o })) : [],
       ratingMax: isRating ? ratingMaxOf(f) : 5,
       ddStart: isDiff ? (raw?.start || '') : '',
       ddEnd: isDiff ? (raw?.end || '') : '',
+      qtyMode: isQty && raw?.mode === 'manual' ? 'manual' : 'auto',
+      qtyUnit: isQty ? (raw?.unit || '') : '',
       is_system: !!f.is_system
     })
   } else {
     Object.assign(fieldForm, {
       id: null, table_id: fieldsTable.value.id, label: '', type: 'text',
       required: false, default_value: '', options: [], is_system: false,
-      colorList: [], ratingMax: 5, ddStart: '', ddEnd: ''
+      colorList: [], ratingMax: 5, ddStart: '', ddEnd: '',
+      qtyMode: 'auto', qtyUnit: ''
     })
   }
   fieldOpen.value = true
@@ -1054,6 +1084,9 @@ async function saveField() {
   } else if (t === 'date_diff') {
     if (!fieldForm.ddStart) return ElMessage.warning('请选择起始日期字段')
     options = { start: fieldForm.ddStart, end: fieldForm.ddEnd || '' }
+  } else if (t === 'quantity') {
+    options = { mode: fieldForm.qtyMode === 'manual' ? 'manual' : 'auto',
+                unit: String(fieldForm.qtyUnit || '').trim() }
   }
   savingField.value = true
   try {

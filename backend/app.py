@@ -517,14 +517,22 @@ def create_app():
         def values_of(value):
             if isinstance(value, list):
                 return [str(v).strip() for v in value if str(v).strip()]
+            if isinstance(value, dict):  # 数量明细等结构体不作为维度
+                return []
             s = str(value if value is not None else "").strip()
             return [s] if s else []
 
         def numbers_of(data, key):
-            out = []
-            for v in values_of(data.get(key)):
+            v = data.get(key)
+            if isinstance(v, dict):
                 try:
-                    out.append(float(v))
+                    return [float(v.get("total"))]
+                except (TypeError, ValueError):
+                    return []
+            out = []
+            for x in values_of(v):
+                try:
+                    out.append(float(x))
                 except ValueError:
                     pass
             return out
