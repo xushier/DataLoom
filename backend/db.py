@@ -97,19 +97,30 @@ DEFAULT_DASHBOARD_CARDS = [
 DEFAULT_SETTINGS["dashboard_cards"] = json.dumps(
     DEFAULT_DASHBOARD_CARDS, ensure_ascii=False)
 
+# 彩色标签字段的默认色板（新建选项未指定颜色时按顺序取用）
+COLOR_PALETTE = ["#5470c6", "#2f9e44", "#e8a33d", "#d94b4b", "#13a8a8",
+                 "#8f5bd6", "#d969a8", "#6b7a8f"]
+
 # 种子表：仅首次初始化时创建，之后与普通表完全一致（可改名、可删除、字段可改）
 SEED_TABLES = [
     {
         "name": "示例台账",
+        "color_field": "status",
         "fields": [
-            ("sn", "序号", "number", 1),
-            ("name", "名称", "text", 2),
-            ("category", "分类", "select", 3),
-            ("project", "所属项目", "select", 4),
-            ("applicant", "登记人", "select", 5),
-            ("apply_time", "登记时间", "datetime", 6),
-            ("amount", "数量", "number", 7),
-            ("remark", "备注", "text", 8),
+            ("sn", "序号", "number", 1, "[]"),
+            ("name", "名称", "text", 2, "[]"),
+            ("category", "分类", "select", 3, "[]"),
+            ("project", "所属项目", "select", 4, "[]"),
+            ("applicant", "登记人", "select", 5, "[]"),
+            ("apply_time", "登记时间", "datetime", 6, "[]"),
+            ("amount", "数量", "number", 7, "[]"),
+            # 状态：彩色标签（进行中 / 近期落地 / 已终止）
+            ("status", "状态", "color_tag", 8, json.dumps([
+                {"value": "进行中", "color": "#2f9e44"},
+                {"value": "近期落地", "color": "#e8a33d"},
+                {"value": "已终止", "color": "#d94b4b"},
+            ], ensure_ascii=False)),
+            ("remark", "备注", "text", 9, "[]"),
         ],
     },
 ]
@@ -238,6 +249,7 @@ def init_db():
             name TEXT NOT NULL,
             is_system INTEGER DEFAULT 0,
             template TEXT DEFAULT '',
+            color_field TEXT DEFAULT '',
             created_at TEXT
         );
         CREATE TABLE IF NOT EXISTS fields(
@@ -294,6 +306,10 @@ def init_db():
             conn.execute("ALTER TABLE records ADD COLUMN deleted_at TEXT")
         if "deleted_by" not in rcols:
             conn.execute("ALTER TABLE records ADD COLUMN deleted_by TEXT")
+        # 迁移：表级「行色条」字段（存量库补列）
+        tcols = {r["name"] for r in query("PRAGMA table_info(tables)")}
+        if "color_field" not in tcols:
+            conn.execute("ALTER TABLE tables ADD COLUMN color_field TEXT DEFAULT ''")
         # 通用化后不再对任何字段做唯一约束（旧版图号唯一索引一并移除）
         conn.execute("DROP INDEX IF EXISTS uniq_records_drawing")
         conn.commit()
@@ -309,14 +325,15 @@ def init_db():
         if not query("SELECT id FROM tables LIMIT 1", one=True):
             for t in SEED_TABLES:
                 cur = conn.execute(
-                    "INSERT INTO tables(name, is_system, template, created_at) VALUES(?,0,?,?)",
-                    (t["name"], "", now_str()))
+                    "INSERT INTO tables(name, is_system, template, color_field, created_at) "
+                    "VALUES(?,0,?,?,?)",
+                    (t["name"], "", t.get("color_field", ""), now_str()))
                 tid = cur.lastrowid
-                for key, label, ftype, sort in t["fields"]:
+                for key, label, ftype, sort, opts in t["fields"]:
                     conn.execute(
                         "INSERT INTO fields(table_id, key, label, type, required, default_value,"
-                        " options, is_system, sort) VALUES(?,?,?,?,0,'','[]',0,?)",
-                        (tid, key, label, ftype, sort))
+                        " options, is_system, sort) VALUES(?,?,?,?,0,'',?,0,?)",
+                        (tid, key, label, ftype, opts, sort))
                 conn.commit()
         conn.commit()
     finally:

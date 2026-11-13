@@ -70,9 +70,10 @@
 
     <!-- 数据表 -->
     <div class="card table-card" v-loading="loading">
-      <el-table ref="tableRef" :data="records" stripe size="small"
+      <el-table ref="tableRef" :data="records" :stripe="!rowColorField" size="small"
                 class="dc-table" border
                 height="100%" :row-key="r => r.id"
+                :row-class-name="rowClassName" :row-style="rowStyle"
                 :highlight-current-row="selMode === 'single'"
                 :default-sort="{ prop: 'data.sn', order: 'descending' }"
                 @sort-change="onSortChange" @row-click="onRowClick"
@@ -98,9 +99,28 @@
                          show-overflow-tooltip>
           <template #default="{ row }">
             <span v-if="f.key === 'sn'" class="tabular">{{ row.data.sn }}</span>
+            <!-- 彩色标签：大色块徽章 -->
+            <span v-else-if="f.type === 'color_tag'">
+              <span v-if="row.data[f.key]" class="ct-badge"
+                    :style="badgeStyle(optionColor(f, row.data[f.key]))">{{ row.data[f.key] }}</span>
+              <span v-else class="muted">—</span>
+            </span>
+            <!-- 评分：只读星级 -->
+            <span v-else-if="f.type === 'rating'" class="rating-cell">
+              <el-rate v-if="Number(row.data[f.key]) > 0" :model-value="Number(row.data[f.key])"
+                       :max="ratingMax(f)" disabled size="small" />
+              <span v-else class="muted">—</span>
+            </span>
+            <!-- 日期差值：后端实时计算 -->
+            <span v-else-if="f.type === 'date_diff'">
+              {{ row.calc?.[f.key]?.text || '—' }}
+            </span>
             <template v-else-if="Array.isArray(row.data[f.key])">
-              <el-tag v-for="v in row.data[f.key]" :key="v" size="small" effect="plain"
-                      style="margin-right: 4px">{{ v }}</el-tag>
+              <template v-if="row.data[f.key].length">
+                <el-tag v-for="v in row.data[f.key]" :key="v" size="small" effect="plain"
+                        style="margin-right: 4px">{{ v }}</el-tag>
+              </template>
+              <span v-else class="muted">—</span>
             </template>
             <el-tag v-else-if="f.type === 'switch'" size="small" :type="row.data[f.key] ? 'success' : 'info'">
               {{ row.data[f.key] ? '开' : '关' }}
@@ -249,6 +269,70 @@ function onRowClick(row) { if (selMode.value === 'single') selSingleId.value = r
 const activeTable = computed(() => tables.value.find(t => t.id === activeId.value) || null)
 const filterCount = computed(() => Object.keys(filters.value).length)
 const visibleFields = computed(() => fields.value.filter(f => visibleKeys.value.includes(f.key)))
+
+/* ---------------- 彩色标签 / 行色条 ---------------- */
+
+const FALLBACK_COLORS = ['#5470c6', '#2f9e44', '#e8a33d', '#d94b4b',
+                         '#13a8a8', '#8f5bd6', '#d969a8', '#6b7a8f']
+function fallbackColor(i) { return FALLBACK_COLORS[i % FALLBACK_COLORS.length] }
+
+/* 行色条依据字段（表级配置），字段不存在或非彩色标签时不启用 */
+const rowColorField = computed(() => {
+  const t = activeTable.value
+  const key = t?.color_field
+  if (!key) return ''
+  return (fields.value.find(f => f.key === key && f.type === 'color_tag')) ? key : ''
+})
+
+const colorMap = computed(() => {
+  const map = {}
+  for (const f of fields.value) {
+    if (f.type !== 'color_tag') continue
+    const m = {}
+    const list = options[f.key] || []
+    list.forEach((o, i) => {
+      if (o && typeof o === 'object') m[String(o.value)] = o.color || fallbackColor(i)
+      else m[String(o)] = fallbackColor(i)
+    })
+    map[f.key] = m
+  }
+  return map
+})
+
+function optionColor(f, v) {
+  const m = colorMap.value[f.key] || {}
+  return m[String(v)] || fallbackColor(String(v ?? '').length)
+}
+
+function rowColor(row) {
+  const key = rowColorField.value
+  if (!key || !row?.data?.[key]) return ''
+  return optionColor({ key }, row.data[key])
+}
+
+function rowClassName({ row }) {
+  return rowColor(row) ? 'row-colored' : ''
+}
+function rowStyle({ row }) {
+  const c = rowColor(row)
+  return c ? { '--row-color': c } : {}
+}
+
+function textColor(hex) {
+  const c = String(hex || '').replace('#', '')
+  if (c.length !== 6) return '#fff'
+  const r = parseInt(c.slice(0, 2), 16)
+  const g = parseInt(c.slice(2, 4), 16)
+  const b = parseInt(c.slice(4, 6), 16)
+  return (r * 299 + g * 587 + b * 114) / 1000 > 160 ? '#1f2329' : '#fff'
+}
+function badgeStyle(color) {
+  return { background: color, color: textColor(color) }
+}
+function ratingMax(f) {
+  const m = f.options && typeof f.options === 'object' ? Number(f.options.max) : 5
+  return Number.isFinite(m) && m >= 3 ? m : 5
+}
 
 /* ---------------- 数据加载 ---------------- */
 
@@ -525,7 +609,10 @@ function textWidth(t) {
   }
   return w
 }
-function cellWidth(f, v) {
+function cellWidth(f, v, row) {
+  if (f.type === 'rating') return ratingMax(f) * 17 + 14
+  if (f.type === 'date_diff') return textWidth(String(row?.calc?.[f.key]?.text || ''))
+  if (f.type === 'color_tag') return v ? textWidth(String(v)) + 32 : 0
   if (v === null || v === undefined || v === '') return 0
   if (Array.isArray(v)) {
     // 多选标签：每个标签自带内边距、边框与间距
@@ -541,7 +628,7 @@ const autoWidths = computed(() => {
   for (const f of visibleFields.value) {
     let w = 0
     for (const r of records.value) {
-      const cw = cellWidth(f, r.data[f.key])
+      const cw = cellWidth(f, r.data[f.key], r)
       if (cw > w) { w = cw; if (w > 470) break }
     }
     // 表头文字 + 排序箭头 + 单元格左右内边距与少量余量
@@ -619,6 +706,23 @@ function fmtCell(v) {
   font-size: 13px; color: var(--dc-text);
   padding: 5px 8px; border-radius: 6px; margin-bottom: 4px;
   background: var(--dc-bg-soft); text-align: left;
+}
+
+/* 彩色标签：醒目大色块徽章 */
+.ct-badge {
+  display: inline-block; padding: 2px 12px; border-radius: 7px;
+  font-size: 12px; font-weight: 600; line-height: 20px;
+  min-width: 56px; text-align: center; white-space: nowrap;
+}
+.rating-cell :deep(.el-rate) { height: 18px; display: inline-flex; }
+.rating-cell :deep(.el-rate__icon) { font-size: 15px; margin-right: 2px; }
+
+/* 行色条：左侧 4px 竖条跟随表级配置的彩色标签字段 */
+.dc-table :deep(.el-table__body tr.row-colored td.el-table__cell:first-child) {
+  box-shadow: inset 4px 0 0 var(--row-color);
+}
+.dc-table :deep(.el-table__body tr.row-colored:hover td.el-table__cell:first-child) {
+  box-shadow: inset 4px 0 0 var(--row-color);
 }
 
 @media (max-width: 768px) {

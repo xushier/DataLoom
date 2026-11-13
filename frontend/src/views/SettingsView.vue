@@ -116,6 +116,18 @@
             <el-table-column label="字段数" width="90" align="center">
               <template #default="{ row }">{{ row.fields?.length || 0 }}</template>
             </el-table-column>
+            <el-table-column label="行首色条" width="170" align="center">
+              <template #default="{ row }">
+                <el-select :model-value="row.color_field || ''" size="small" class="color-field-sel"
+                           :disabled="!colorTagFields(row).length"
+                           placeholder="不显示"
+                           @update:model-value="v => setColorField(row, v)">
+                  <el-option label="不显示" value="" />
+                  <el-option v-for="f in colorTagFields(row)" :key="f.key"
+                             :label="f.label" :value="f.key" />
+                </el-select>
+              </template>
+            </el-table-column>
             <el-table-column label="操作" width="232" align="center">
               <template #default="{ row }">
                 <div class="op-btns">
@@ -483,9 +495,11 @@
       </div>
       <el-table :data="editFields" stripe size="small" class="dc-table">
         <el-table-column prop="label" label="字段名" min-width="110" />
-        <el-table-column label="类型" width="90" align="center">
+        <el-table-column label="类型" width="108" align="center">
           <template #default="{ row }">
-            <el-tag size="small" effect="plain">{{ typeLabel(row.type) }}</el-tag>
+            <el-tooltip :content="FIELD_TIPS[row.type] || typeLabel(row.type)" placement="top">
+              <el-tag size="small" effect="plain" class="type-tag">{{ typeLabel(row.type) }}</el-tag>
+            </el-tooltip>
           </template>
         </el-table-column>
         <el-table-column label="必填" width="60" align="center">
@@ -494,14 +508,32 @@
         <el-table-column prop="default_value" label="默认值" width="90" show-overflow-tooltip>
           <template #default="{ row }">{{ row.default_value || '—' }}</template>
         </el-table-column>
-        <el-table-column label="可选值" min-width="140">
+        <el-table-column label="可选值" min-width="150">
           <template #default="{ row }">
-            <template v-if="isSelType(row.type)">
-              <el-tag v-for="o in (row.options || []).slice(0, 3)" :key="o" size="small"
-                      style="margin-right: 4px" effect="plain">{{ o }}</el-tag>
-              <span v-if="(row.options || []).length > 3" class="muted">+{{ row.options.length - 3 }}</span>
-              <span v-if="!(row.options || []).length" class="muted">暂无</span>
-            </template>
+            <el-tooltip v-if="isSelType(row.type) || row.type === 'color_tag'"
+                        :content="optionSummary(row)" placement="top">
+              <div class="opt-cell">
+                <template v-if="row.type === 'color_tag'">
+                  <span v-for="o in colorOptions(row).slice(0, 2)" :key="o.value" class="opt-badge"
+                        :style="{ background: o.color, color: textColor(o.color) }">{{ o.value }}</span>
+                  <span v-if="colorOptions(row).length > 2" class="muted">+{{ colorOptions(row).length - 2 }}</span>
+                  <span v-if="!colorOptions(row).length" class="muted">暂无</span>
+                </template>
+                <template v-else>
+                  <el-tag v-for="o in (row.options || []).slice(0, 3)" :key="o" size="small"
+                          style="margin-right: 4px" effect="plain">{{ o }}</el-tag>
+                  <span v-if="(row.options || []).length > 3" class="muted">+{{ row.options.length - 3 }}</span>
+                  <span v-if="!(row.options || []).length" class="muted">暂无</span>
+                </template>
+              </div>
+            </el-tooltip>
+            <el-tooltip v-else-if="row.type === 'rating'" content="星级评分" placement="top">
+              <span class="muted">最多 {{ ratingMax(row) }} 星</span>
+            </el-tooltip>
+            <el-tooltip v-else-if="row.type === 'date_diff'"
+                        :content="diffSummary(row) || '未指定起止字段'" placement="top">
+              <span class="muted">{{ diffSummary(row) || '未配置' }}</span>
+            </el-tooltip>
             <span v-else class="muted">—</span>
           </template>
         </el-table-column>
@@ -525,14 +557,15 @@
                     placeholder="如：设计负责人" />
         </el-form-item>
         <el-form-item label="字段类型">
-          <el-select v-model="fieldForm.type" class="w-full">
+          <el-select v-model="fieldForm.type" class="w-full" @change="onFieldTypeChange">
             <el-option v-for="(label, t) in FIELD_TYPES" :key="t" :label="label" :value="t" />
           </el-select>
+          <div class="field-tip muted">{{ FIELD_TIPS[fieldForm.type] || '' }}</div>
         </el-form-item>
         <el-form-item label="是否必填">
           <el-switch v-model="fieldForm.required" />
         </el-form-item>
-        <el-form-item v-if="!isSelType(fieldForm.type)" label="默认值">
+        <el-form-item v-if="!isSelType(fieldForm.type) && !isSpecialType(fieldForm.type)" label="默认值">
           <el-date-picker v-if="fieldForm.type === 'date'" v-model="fieldForm.default_value"
                           type="date" value-format="YYYY-MM-DD" class="w-full" />
           <el-date-picker v-else-if="fieldForm.type === 'datetime'" v-model="fieldForm.default_value"
@@ -545,6 +578,34 @@
                      default-first-option placeholder="输入后回车添加，可预先配置" class="w-full">
             <el-option v-for="o in fieldForm.options" :key="o" :label="o" :value="o" />
           </el-select>
+        </el-form-item>
+        <!-- 彩色标签：逐项配置文字与颜色 -->
+        <el-form-item v-if="fieldForm.type === 'color_tag'" label="可选值">
+          <div class="ct-editor">
+            <div v-for="(o, i) in fieldForm.colorList" :key="i" class="ct-row">
+              <el-color-picker v-model="o.color" size="small" :predefine="PRESET_COLORS" />
+              <el-input v-model="o.value" placeholder="选项文字" maxlength="20" />
+              <el-button link type="danger" :icon="Delete" @click="fieldForm.colorList.splice(i, 1)" />
+            </div>
+            <el-button size="small" :icon="Plus" @click="addColorOption">添加选项</el-button>
+            <div class="field-tip muted">颜色可留空，保存时自动分配；值可以为空，数据留空时显示无颜色</div>
+          </div>
+        </el-form-item>
+        <!-- 评分：满分星数 -->
+        <el-form-item v-if="fieldForm.type === 'rating'" label="满分星数">
+          <el-input-number v-model="fieldForm.ratingMax" :min="3" :max="10" :step="1" />
+        </el-form-item>
+        <!-- 日期差值：起止日期字段 -->
+        <el-form-item v-if="fieldForm.type === 'date_diff'" label="起始日期">
+          <el-select v-model="fieldForm.ddStart" placeholder="选择日期字段" class="w-full">
+            <el-option v-for="f in dateFields" :key="f.key" :label="f.label" :value="f.key" />
+          </el-select>
+        </el-form-item>
+        <el-form-item v-if="fieldForm.type === 'date_diff'" label="结束日期">
+          <el-select v-model="fieldForm.ddEnd" placeholder="留空表示按今天计算" clearable class="w-full">
+            <el-option v-for="f in dateFields" :key="f.key" :label="f.label" :value="f.key" />
+          </el-select>
+          <div class="field-tip muted">留空则持续计算到今天（适合「进行中」的项目）</div>
         </el-form-item>
       </el-form>
       <template #footer>
@@ -602,7 +663,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, FolderAdd } from '@element-plus/icons-vue'
+import { Plus, FolderAdd, Delete } from '@element-plus/icons-vue'
 import { http, downloadBlob } from '@/api'
 import { useApp, THEMES } from '@/store'
 import Logo from '@/components/Logo.vue'
@@ -617,7 +678,23 @@ watch(tab, () => router.replace({ query: { ...route.query, tab: tab.value } }))
 const FIELD_TYPES = {
   text: '文本', textarea: '多行文本', number: '数字', select: '可搜索下拉',
   multi_select: '多选下拉', radio: '单选组', checkbox: '复选组', switch: '开关',
-  date: '日期', datetime: '日期时间'
+  date: '日期', datetime: '日期时间',
+  color_tag: '彩色标签', rating: '评分', date_diff: '日期差值'
+}
+const FIELD_TIPS = {
+  select: '可搜索，输入新值会自动加入可选值',
+  multi_select: '可搜索多选，输入新值会自动加入可选值',
+  radio: '平铺单选，只能从已配置的可选值中选择',
+  checkbox: '平铺多选，可勾选多个可选值',
+  color_tag: '单选 + 每个选项自定义颜色，可为空；可指定用于行首色条',
+  rating: '点击星星打分，存数字，可排序与求平均',
+  date_diff: '自动计算两个日期间的天数，并以「天 / 个月 / 年」显示',
+  switch: '开关，存 1 / 0',
+  date: '日期',
+  datetime: '日期时间',
+  number: '数字',
+  text: '单行文本',
+  textarea: '多行文本'
 }
 const typeLabel = t => FIELD_TYPES[t] || t
 const isSelType = t => ['select', 'multi_select', 'radio', 'checkbox'].includes(t)
@@ -825,8 +902,70 @@ const fieldOpen = ref(false)
 const savingField = ref(false)
 const fieldForm = reactive({
   id: null, table_id: null, label: '', type: 'text', required: false,
-  default_value: '', options: [], is_system: false
+  default_value: '', options: [], is_system: false,
+  colorList: [], ratingMax: 5, ddStart: '', ddEnd: ''
 })
+
+const PRESET_COLORS = ['#2f9e44', '#e8a33d', '#d94b4b', '#5470c6',
+                       '#13a8a8', '#8f5bd6', '#d969a8', '#6b7a8f']
+const FALLBACK_COLORS = PRESET_COLORS
+
+function isSpecialType(t) { return ['color_tag', 'rating', 'date_diff'].includes(t) }
+
+function colorOptions(f) {
+  return (f.options || []).map((o, i) => (o && typeof o === 'object'
+    ? { value: String(o.value ?? ''), color: o.color || FALLBACK_COLORS[i % 8] }
+    : { value: String(o ?? ''), color: FALLBACK_COLORS[i % 8] }))
+    .filter(o => o.value !== '')
+}
+function ratingMaxOf(f) {
+  const m = f.options && typeof f.options === 'object' ? Number(f.options.max) : 5
+  return Number.isFinite(m) && m >= 3 ? m : 5
+}
+function ratingMax(f) { return ratingMaxOf(f) }
+function textColor(hex) {
+  const c = String(hex || '').replace('#', '')
+  if (c.length !== 6) return '#fff'
+  const r = parseInt(c.slice(0, 2), 16)
+  const g = parseInt(c.slice(2, 4), 16)
+  const b = parseInt(c.slice(4, 6), 16)
+  return (r * 299 + g * 587 + b * 114) / 1000 > 160 ? '#1f2329' : '#fff'
+}
+function optionSummary(row) {
+  const list = row.type === 'color_tag' ? colorOptions(row).map(o => o.value)
+    : (row.options || []).map(o => String(o))
+  return list.length ? list.join('、') : '暂无可选值'
+}
+function diffSummary(row) {
+  const cfg = row.options && typeof row.options === 'object' ? row.options : {}
+  const label = k => (fieldsTable.value?.fields || []).find(f => f.key === k)?.label || k
+  if (!cfg.start) return ''
+  return `${label(cfg.start)} → ${cfg.end ? label(cfg.end) : '今天'}`
+}
+const dateFields = computed(() =>
+  (fieldsTable.value?.fields || []).filter(f =>
+    (f.type === 'date' || f.type === 'datetime') && f.id !== fieldForm.id))
+function colorTagFields(row) {
+  return (row.fields || []).filter(f => f.type === 'color_tag')
+}
+function addColorOption() {
+  fieldForm.colorList.push({ value: '', color: FALLBACK_COLORS[fieldForm.colorList.length % 8] })
+}
+function onFieldTypeChange() {
+  if (fieldForm.type === 'color_tag' && !fieldForm.colorList.length) {
+    fieldForm.colorList = [{ value: '', color: FALLBACK_COLORS[0] }]
+  }
+}
+
+async function setColorField(row, key) {
+  try {
+    await http.put(`/tables/${row.id}`, { color_field: key || '' })
+    row.color_field = key || ''
+    ElMessage.success(key ? '已启用行首色条' : '已关闭行首色条')
+  } catch (e) {
+    ElMessage.error(e?.message || '保存失败')
+  }
+}
 
 async function loadTables() {
   const res = await http.get('/tables')
@@ -878,15 +1017,25 @@ function openFields(row) {
 
 function openFieldEdit(f) {
   if (f) {
+    const raw = f.options
+    const isColor = f.type === 'color_tag'
+    const isRating = f.type === 'rating'
+    const isDiff = f.type === 'date_diff'
     Object.assign(fieldForm, {
       id: f.id, table_id: fieldsTable.value.id, label: f.label, type: f.type,
       required: !!f.required, default_value: f.default_value || '',
-      options: [...(f.options || [])], is_system: !!f.is_system
+      options: (isColor || isRating || isDiff) ? [] : [...(raw || [])],
+      colorList: isColor ? colorOptions(f).map(o => ({ ...o })) : [],
+      ratingMax: isRating ? ratingMaxOf(f) : 5,
+      ddStart: isDiff ? (raw?.start || '') : '',
+      ddEnd: isDiff ? (raw?.end || '') : '',
+      is_system: !!f.is_system
     })
   } else {
     Object.assign(fieldForm, {
       id: null, table_id: fieldsTable.value.id, label: '', type: 'text',
-      required: false, default_value: '', options: [], is_system: false
+      required: false, default_value: '', options: [], is_system: false,
+      colorList: [], ratingMax: 5, ddStart: '', ddEnd: ''
     })
   }
   fieldOpen.value = true
@@ -894,13 +1043,25 @@ function openFieldEdit(f) {
 
 async function saveField() {
   if (!fieldForm.label.trim()) return ElMessage.warning('请填写字段名称')
+  const t = fieldForm.type
+  let options = fieldForm.options
+  if (t === 'color_tag') {
+    options = fieldForm.colorList
+      .map(o => ({ value: String(o.value || '').trim(), color: o.color || '' }))
+      .filter(o => o.value)
+  } else if (t === 'rating') {
+    options = { max: fieldForm.ratingMax }
+  } else if (t === 'date_diff') {
+    if (!fieldForm.ddStart) return ElMessage.warning('请选择起始日期字段')
+    options = { start: fieldForm.ddStart, end: fieldForm.ddEnd || '' }
+  }
   savingField.value = true
   try {
     const payload = {
-      label: fieldForm.label.trim(), type: fieldForm.type,
+      label: fieldForm.label.trim(), type: t,
       required: fieldForm.required ? 1 : 0,
       default_value: String(fieldForm.default_value ?? ''),
-      options: fieldForm.options
+      options
     }
     if (fieldForm.id) await http.put(`/fields/${fieldForm.id}`, payload)
     else await http.post(`/tables/${fieldForm.table_id}/fields`, payload)
@@ -1284,4 +1445,15 @@ onMounted(() => {
   .pane .set-form :deep(.el-form-item__content) { margin-left: 0 !important; }
   .inline-row { flex-wrap: wrap; }
 }
+
+/* 字段管理：可选值展示与彩色标签编辑器 */
+.opt-cell { display: flex; align-items: center; gap: 4px; flex-wrap: nowrap; overflow: hidden; }
+.opt-badge { display: inline-block; padding: 1px 8px; border-radius: 5px; font-size: 12px;
+             font-weight: 600; line-height: 18px; white-space: nowrap; }
+.type-tag { max-width: 100%; }
+.field-tip { font-size: 12px; margin-top: 4px; line-height: 1.5; }
+.ct-editor { width: 100%; }
+.ct-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+.ct-row :deep(.el-input) { flex: 1; }
+.color-field-sel { width: 100%; }
 </style>

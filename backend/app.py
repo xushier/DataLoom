@@ -479,8 +479,19 @@ def create_app():
         tables = {t["id"]: t["name"] for t in
                   D.query("SELECT id, name FROM tables ORDER BY id")}
         labels = {}
-        for f in D.query("SELECT table_id, key, label FROM fields"):
+        color_maps = {}
+        for f in D.query("SELECT table_id, key, label, type, options FROM fields"):
             labels.setdefault(f["table_id"], {})[f["key"]] = f["label"]
+            if f["type"] == "color_tag":
+                try:
+                    opts = json.loads(f["options"] or "[]")
+                except Exception:
+                    opts = []
+                cmap = {}
+                for o in opts:
+                    if isinstance(o, dict) and o.get("value"):
+                        cmap[str(o["value"])] = o.get("color") or ""
+                color_maps.setdefault(f["table_id"], {})[f["key"]] = cmap
         records = []
         for r in D.query("SELECT table_id, data, created_at FROM records "
                          "WHERE deleted_at IS NULL"):
@@ -586,6 +597,16 @@ def create_app():
                         counter[k] = counter.get(k, 0) + val
             items = sorted(counter.items(), key=lambda x: -x[1])[:limit]
             card["items"] = [{"name": k, "value": round(v, 2)} for k, v in items]
+            # 彩色标签维度：把选项颜色透传给图表
+            colors = {}
+            if dimension and dimension != "__table__":
+                for t_key, cmap in color_maps.items():
+                    if tid and t_key != tid:
+                        continue
+                    for k, v in (cmap.get(dimension) or {}).items():
+                        colors.setdefault(k, v)
+            if colors:
+                card["colors"] = colors
             if dimension == "__table__":
                 dim_label = "数据表"
             else:

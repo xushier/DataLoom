@@ -59,16 +59,46 @@
                                  placeholder="可搜索选择，无则直接输入" clearable />
                 <!-- 单选组 -->
                 <el-radio-group v-else-if="f.type === 'radio'" v-model="e[f.key]">
-                  <el-radio v-for="o in opts(f.key)" :key="o" :value="o" border size="small">{{ o }}</el-radio>
+                  <el-radio v-for="o in optValues(f.key)" :key="o" :value="o" border size="small">{{ o }}</el-radio>
                 </el-radio-group>
+                <!-- 彩色标签：可清空，选中后按选项颜色显示 -->
+                <div v-else-if="f.type === 'color_tag'" class="ct-picker">
+                  <el-select v-model="e[f.key]" filterable allow-create default-first-option
+                             :reserve-keyword="false" placeholder="选择或新建（可清空）"
+                             clearable class="w-full">
+                    <el-option v-for="o in colorOpts(f.key)" :key="o.value" :label="o.value"
+                               :value="o.value">
+                      <span class="ct-dot" :style="{ background: o.color }" />
+                      <span>{{ o.value }}</span>
+                    </el-option>
+                  </el-select>
+                  <span v-if="e[f.key]" class="ct-badge"
+                        :style="badgeStyle(optionColor(f.key, e[f.key]))">{{ e[f.key] }}</span>
+                </div>
+                <!-- 评分：直接点星 -->
+                <div v-else-if="f.type === 'rating'" class="rating-line">
+                  <el-rate v-model="e[f.key]" :max="ratingMax(f)" clearable
+                           :colors="['#c9ced6', '#e8a33d', '#e8a33d']" />
+                  <span class="muted">{{ e[f.key] || 0 }} / {{ ratingMax(f) }}</span>
+                </div>
+                <!-- 日期差值：只读，由起止日期实时计算 -->
+                <el-input v-else-if="f.type === 'date_diff'" :model-value="diffText(f, e)"
+                          disabled>
+                  <template #suffix><span class="muted">自动</span></template>
+                </el-input>
+                <!-- 复选组：平铺多选 -->
+                <el-checkbox-group v-else-if="f.type === 'checkbox'" v-model="e[f.key]">
+                  <el-checkbox v-for="o in optValues(f.key)" :key="o" :value="o" border
+                               size="small">{{ o }}</el-checkbox>
+                </el-checkbox-group>
                 <!-- 开关 -->
                 <el-switch v-else-if="f.type === 'switch'" v-model="e[f.key]" />
-                <!-- 多选下拉（复选 / 多选） -->
-                <el-select v-else-if="f.type === 'multi_select' || f.type === 'checkbox'"
+                <!-- 多选下拉 -->
+                <el-select v-else-if="f.type === 'multi_select'"
                            v-model="e[f.key]" multiple filterable allow-create
                            default-first-option :reserve-keyword="false"
                            placeholder="可搜索，无则直接输入新建" clearable>
-                  <el-option v-for="o in opts(f.key)" :key="o" :label="o" :value="o" />
+                  <el-option v-for="o in optValues(f.key)" :key="o" :label="o" :value="o" />
                 </el-select>
                 <!-- 可搜索输入：点击后原值保留可续改，输入时弹出建议 -->
                 <el-autocomplete v-else-if="f.type === 'select'" v-model="e[f.key]"
@@ -156,7 +186,7 @@ async function loadApplicants() {
 }
 function applicantOptions(key) {
   const list = [...applicants.value]
-  for (const o of opts(key)) if (!list.includes(o)) list.push(o)
+  for (const o of optValues(key)) if (!list.includes(o)) list.push(o)
   return list
 }
 
@@ -168,9 +198,72 @@ const snDisplay = computed(() => {
 function opts(key) { return props.options[key] || [] }
 function isShowRequired(f) { return f.required && f.key !== 'sn' }
 
+// ---------------- 选项 / 颜色 / 计算字段 ----------------
+
+const FALLBACK_COLORS = ['#5470c6', '#2f9e44', '#e8a33d', '#d94b4b',
+                         '#13a8a8', '#8f5bd6', '#d969a8', '#6b7a8f']
+function fallbackColor(i) { return FALLBACK_COLORS[i % FALLBACK_COLORS.length] }
+
+// 兼容两种选项结构：普通选择类 ["A"]；彩色标签 [{value,color}]
+function colorOpts(key) {
+  return opts(key).map((o, i) => (o && typeof o === 'object'
+    ? { value: String(o.value ?? ''), color: o.color || fallbackColor(i) }
+    : { value: String(o ?? ''), color: fallbackColor(i) }))
+    .filter(o => o.value !== '')
+}
+function optValues(key) { return colorOpts(key).map(o => o.value) }
+
+function optionColor(key, v) {
+  const hit = colorOpts(key).find(o => o.value === String(v))
+  return hit ? hit.color : fallbackColor(String(v ?? '').length)
+}
+
+// 浅色底用深字、深色底用白字
+function textColor(hex) {
+  const c = String(hex || '').replace('#', '')
+  if (c.length !== 6) return '#fff'
+  const r = parseInt(c.slice(0, 2), 16)
+  const g = parseInt(c.slice(2, 4), 16)
+  const b = parseInt(c.slice(4, 6), 16)
+  return (r * 299 + g * 587 + b * 114) / 1000 > 160 ? '#1f2329' : '#fff'
+}
+function badgeStyle(color) {
+  return { background: color, color: textColor(color) }
+}
+
+function ratingMax(f) {
+  const m = f.options && typeof f.options === 'object' ? Number(f.options.max) : 5
+  return Number.isFinite(m) && m >= 3 ? m : 5
+}
+
+// 与后端 human_duration 保持一致的可读时长
+function humanDuration(days) {
+  if (days === null || days === undefined || Number.isNaN(days)) return ''
+  if (days < 0) return '—'
+  if (days < 31) return `${days} 天`
+  const years = Math.floor(days / 365)
+  const months = Math.floor((days % 365) / 30)
+  if (!years) return months ? `${months} 个月` : `${days} 天`
+  return months ? `${years} 年 ${months} 个月` : `${years} 年`
+}
+function toDate(v) {
+  const s = String(v || '').trim().slice(0, 10)
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null
+  const d = new Date(`${s}T00:00:00`)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+function diffText(f, entry) {
+  const cfg = f.options && typeof f.options === 'object' ? f.options : {}
+  const start = toDate(entry?.[cfg.start])
+  if (!start) return '选择起始日期后自动计算'
+  const end = cfg.end ? (toDate(entry?.[cfg.end]) || new Date()) : new Date()
+  const days = Math.round((end - start) / 86400000)
+  return humanDuration(days)
+}
+
 // 单选字段建议：点击进入时原值保留可直接续改，输入时弹出过滤建议
 function fetchSuggest(key, q, cb) {
-  const list = key === 'applicant' ? applicantOptions(key) : opts(key)
+  const list = key === 'applicant' ? applicantOptions(key) : optValues(key)
   const s = String(q ?? '').trim().toLowerCase()
   const hit = s ? list.filter(o => String(o).toLowerCase().includes(s)) : list
   cb(hit.slice(0, 50).map(v => ({ value: String(v) })))
@@ -200,6 +293,8 @@ function blankEntry() {
       v = Array.isArray(v) ? v : (v ? [v] : [])
     }
     if (f.type === 'switch') v = v === '1' || v === 1 || v === true
+    if (f.type === 'rating') v = Number(v) || 0
+    if (f.type === 'date_diff') v = ''
     e[f.key] = v ?? (f.type === 'switch' ? false : null)
   }
   return e
@@ -227,6 +322,14 @@ function castVal(f, v) {
   if (f.type === 'multi_select' || f.type === 'checkbox') {
     return v.split(/[,，、;；]/).map(s => s.trim()).filter(Boolean)
   }
+  if (f.type === 'color_tag') {
+    return v.split(/[,，、;；]/).map(s => s.trim()).filter(Boolean)[0] || ''
+  }
+  if (f.type === 'rating') {
+    const n = parseInt(v, 10)
+    return Number.isNaN(n) ? 0 : Math.max(0, Math.min(ratingMax(f), n))
+  }
+  if (f.type === 'date_diff') return ''
   if (f.type === 'switch') return /^(是|真|1|y|yes|true|√|开)$/i.test(v)
   if (f.type === 'number') {
     const n = parseFloat(v)
@@ -353,7 +456,7 @@ function copyPrev(i) {
 function entryPayload(e) {
   const data = {}
   for (const f of fields.value) {
-    if (f.key === 'sn') continue
+    if (f.key === 'sn' || f.type === 'date_diff') continue
     data[f.key] = e[f.key]
   }
   return data
@@ -425,4 +528,12 @@ async function onSubmit() {
 .rec-form :deep(.el-form-item) { margin-bottom: 14px; }
 .rec-form :deep(.el-form-item__label) { font-size: 13px; }
 .w-full { width: 100%; }
+
+/* 彩色标签 */
+.ct-picker { display: flex; align-items: center; gap: 8px; width: 100%; }
+.ct-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%;
+          margin-right: 8px; vertical-align: middle; }
+.ct-badge { display: inline-block; padding: 3px 12px; border-radius: 6px;
+            font-size: 13px; font-weight: 600; white-space: nowrap; }
+.rating-line { display: flex; align-items: center; gap: 10px; }
 </style>

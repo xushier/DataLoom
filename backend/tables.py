@@ -10,9 +10,116 @@ from . import db as D
 
 tables_bp = Blueprint("tables", __name__)
 
-SELECT_TYPES = ("select", "multi_select", "radio", "checkbox")
+SELECT_TYPES = ("select", "multi_select", "radio", "checkbox", "color_tag")
 FIELD_TYPES = ("text", "textarea", "number", "select", "multi_select",
-               "radio", "checkbox", "switch", "date", "datetime")
+               "radio", "checkbox", "switch", "date", "datetime",
+               "color_tag", "rating", "date_diff")
+DATE_TYPES = ("date", "datetime")
+COLOR_PALETTE = getattr(D, "COLOR_PALETTE", ["#5470c6", "#2f9e44", "#e8a33d"])
+
+
+# ---------------- 选项结构 ----------------
+
+def auto_color(i):
+    return COLOR_PALETTE[i % len(COLOR_PALETTE)]
+
+
+def color_options(options):
+    """彩色标签选项统一为 [{"value","color"}]，兼容纯字符串旧数据"""
+    out = []
+    for o in options or []:
+        if isinstance(o, dict):
+            v = str(o.get("value") or "").strip()
+            if v:
+                out.append({"value": v, "color": str(o.get("color") or "") or
+                            auto_color(len(out))})
+        else:
+            v = str(o or "").strip()
+            if v:
+                out.append({"value": v, "color": auto_color(len(out))})
+    return out
+
+
+def norm_field_options(ftype, raw):
+    """按字段类型规范化 options，落库统一为 JSON"""
+    if ftype == "color_tag":
+        return color_options(raw)
+    if ftype == "rating":
+        m = (raw or {}).get("max") if isinstance(raw, dict) else 5
+        try:
+            m = int(m)
+        except (TypeError, ValueError):
+            m = 5
+        return {"max": min(10, max(3, m))}
+    if ftype == "date_diff":
+        r = raw if isinstance(raw, dict) else {}
+        return {"start": str(r.get("start") or "").strip(),
+                "end": str(r.get("end") or "").strip()}
+    return [str(o).strip() for o in (raw or []) if str(o).strip()]
+
+
+def option_map(field):
+    """选项值 -> 颜色 映射（仅彩色标签字段有值）"""
+    if field.get("type") != "color_tag":
+        return {}
+    return {o["value"]: o["color"] for o in color_options(field.get("options"))}
+
+
+# ---------------- 日期差值（计算字段，不落库） ----------------
+
+def _to_date(v):
+    s = str(v or "").strip()
+    if not s:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s[:19], fmt).date()
+        except ValueError:
+            continue
+    try:
+        return datetime.strptime(s[:10], "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
+def human_duration(days):
+    """天数 -> 可读时长：N 天 / N 个月 / N 年 M 个月"""
+    if days is None:
+        return ""
+    if days < 0:
+        return "—"
+    if days < 31:
+        return f"{days} 天"
+    years = days // 365
+    months = (days % 365) // 30
+    if not years:
+        return f"{months} 个月" if months else f"{days} 天"
+    return f"{years} 年 {months} 个月" if months else f"{years} 年"
+
+
+def calc_values(table, data):
+    """计算字段取值：{key: {"days": 天数, "text": 可读文本}}"""
+    out = {}
+    for f in table.get("fields") or []:
+        if f.get("type") != "date_diff":
+            continue
+        cfg = f.get("options") if isinstance(f.get("options"), dict) else {}
+        start = _to_date((data or {}).get(cfg.get("start") or ""))
+        if start is None:
+            continue
+        end = _to_date((data or {}).get(cfg.get("end") or "")) if cfg.get("end") else None
+        if end is None:
+            end = D.now().date()
+        days = (end - start).days
+        out[f["key"]] = {"days": days, "text": human_duration(days)}
+    return out
+
+
+def decorate(table, records):
+    """为记录附加计算字段结果（不写库）"""
+    for r in records:
+        r["calc"] = calc_values(table, r["data"])
+    return records
 
 
 # ---------------- 工具 ----------------
@@ -90,7 +197,10 @@ def apply_query(records, table, args):
                 continue
             op = cond.get("op")
             val = cond.get("value")
-            target = data.get(key, "")
+            if fmap.get(key, {}).get("type") == "date_diff":
+                target = (r.get("calc") or {}).get(key, {}).get("days", "")
+            else:
+                target = data.get(key, "")
             tstr = str(target if target is not None else "")
             if op == "in":
                 vals = [str(x) for x in (val or [])]
@@ -139,6 +249,9 @@ def apply_query(records, table, args):
     order = args.get("order", "desc")
     if sort == "id":
         result.sort(key=lambda r: r["id"], reverse=(order == "desc"))
+    elif sort in fmap and fmap[sort]["type"] == "date_diff":
+        result.sort(key=lambda r: (r.get("calc") or {}).get(sort, {}).get("days", -1),
+                    reverse=(order == "desc"))
     elif sort in fmap:
         result.sort(key=lambda r: sort_key(r["data"].get(sort)),
                     reverse=(order == "desc"))
@@ -149,6 +262,7 @@ def apply_query(records, table, args):
 
 def record_row(r, table=None):
     return {"id": r["id"], "table_id": r["table_id"], "data": r["data"],
+            "calc": r.get("calc") or {},
             "created_at": r["created_at"], "updated_at": r["updated_at"],
             "created_by": r["created_by"]}
 
@@ -170,25 +284,36 @@ def record_title(data):
 
 
 def merge_options(table, data, user=""):
-    """下拉类字段新值自动加入可选值"""
+    """下拉类字段新值自动加入可选值（彩色标签自动分配颜色）"""
     changed = False
     for f in table["fields"]:
-        if f["type"] in SELECT_TYPES and f["key"] in data:
-            vals = data[f["key"]]
-            if f["type"] in ("multi_select", "checkbox"):
-                vals = vals if isinstance(vals, list) else [vals]
-            else:
-                vals = [vals]
-            opts = f["options"]
-            new_opts = list(opts)
+        if f["type"] not in SELECT_TYPES or f["key"] not in data:
+            continue
+        vals = data[f["key"]]
+        if f["type"] in ("multi_select", "checkbox"):
+            vals = vals if isinstance(vals, list) else [vals]
+        else:
+            vals = [vals]
+        if f["type"] == "color_tag":
+            old = color_options(f["options"])
+            known = {o["value"] for o in old}
+            new_opts = list(old)
+            for v in vals:
+                v = str(v or "").strip()
+                if v and v not in known:
+                    new_opts.append({"value": v, "color": auto_color(len(new_opts))})
+                    known.add(v)
+        else:
+            old = list(f["options"])
+            new_opts = list(old)
             for v in vals:
                 v = str(v or "").strip()
                 if v and v not in new_opts:
                     new_opts.append(v)
-            if new_opts != opts:
-                D.execute("UPDATE fields SET options=? WHERE id=?",
-                          (json.dumps(new_opts, ensure_ascii=False), f["id"]))
-                changed = True
+        if new_opts != old:
+            D.execute("UPDATE fields SET options=? WHERE id=?",
+                      (json.dumps(new_opts, ensure_ascii=False), f["id"]))
+            changed = True
     return changed
 
 
@@ -287,9 +412,12 @@ def create_table():
         src = template
     if src and not D.query("SELECT id FROM tables WHERE id=?", (src,), one=True):
         src = None
+    src_row = D.query("SELECT * FROM tables WHERE id=?", (src,), one=True) if src else None
     tid = D.execute(
-        "INSERT INTO tables(name, is_system, template, created_at) VALUES(?,0,?,?)",
-        (name, template if isinstance(template, str) else "", D.now_str()))
+        "INSERT INTO tables(name, is_system, template, color_field, created_at) "
+        "VALUES(?,0,?,?,?)",
+        (name, template if isinstance(template, str) else "",
+         (src_row or {}).get("color_field") or "", D.now_str()))
     if src:
         for f in D.query("SELECT * FROM fields WHERE table_id=? ORDER BY sort, id", (src,)):
             D.execute(
@@ -312,16 +440,24 @@ def manage_table(tid):
         return jsonify(ok=False, message="表不存在"), 404
     if request.method == "PUT":
         body = request.get_json(force=True, silent=True) or {}
-        name = (body.get("name") or "").strip()
+        if "color_field" in body:
+            # 行色条依据字段：仅接受本表中的彩色标签字段，空串表示不显示
+            cf = str(body.get("color_field") or "").strip()
+            if cf and not any(f["key"] == cf and f["type"] == "color_tag"
+                              for f in table["fields"]):
+                cf = ""
+            D.execute("UPDATE tables SET color_field=? WHERE id=?", (cf, tid))
+        name = (body.get("name") or table["name"]).strip()
         if not name:
             return jsonify(ok=False, message="请填写表名"), 400
         dup = D.query("SELECT id FROM tables WHERE name=? AND id<>?",
                       (name, tid), one=True)
         if dup:
             return jsonify(ok=False, message="表名已存在，请更换"), 400
-        D.execute("UPDATE tables SET name=? WHERE id=?", (name, tid))
-        D.log_op(g.req_user_name(), "table_rename", tid, name,
-                 detail={"old": table["name"], "new": name})
+        if name != table["name"]:
+            D.execute("UPDATE tables SET name=? WHERE id=?", (name, tid))
+            D.log_op(g.req_user_name(), "table_rename", tid, name,
+                     detail={"old": table["name"], "new": name})
         return jsonify(ok=True)
     # DELETE：任何表都可删除（含内置示例表）
     D.execute("DELETE FROM records WHERE table_id=?", (tid,))
@@ -354,8 +490,7 @@ def add_field(tid):
     while f"f_{n}" in keys:
         n += 1
     sort = max([f["sort"] for f in table["fields"]], default=0) + 1
-    opts = [str(o).strip() for o in (body.get("options") or [])
-            if str(o).strip()]
+    opts = norm_field_options(ftype, body.get("options"))
     fid = D.execute(
         "INSERT INTO fields(table_id, key, label, type, required, default_value,"
         " options, is_system, sort) VALUES(?,?,?,?,?,?,?,0,?)",
@@ -380,21 +515,25 @@ def manage_field(fid):
         # 所有字段均可改名称与类型（内置示例表字段同样可编辑）
         required = 1 if body.get("required") else 0
         default_value = str(body.get("default_value") or "")
-        options = json.dumps(
-            [str(o).strip() for o in (body.get("options") or []) if str(o).strip()],
-            ensure_ascii=False)
         label = (body.get("label") or f["label"]).strip()
         ftype = body.get("type") or f["type"]
         if ftype not in FIELD_TYPES:
             return jsonify(ok=False, message="字段类型不合法"), 400
+        options = json.dumps(norm_field_options(ftype, body.get("options")),
+                             ensure_ascii=False)
         D.execute(
             "UPDATE fields SET label=?, type=?, required=?, default_value=?,"
             " options=? WHERE id=?",
             (label, ftype, required, default_value, options, fid))
+        # 行色条字段被改成非彩色标签时，取消该表的行色条
+        if ftype != "color_tag" and (table.get("color_field") or "") == f["key"]:
+            D.execute("UPDATE tables SET color_field='' WHERE id=?", (f["table_id"],))
         D.log_op(g.req_user_name(), "field_update", f["table_id"],
                  table["name"], detail={"label": f["label"]})
         return jsonify(ok=True)
     # DELETE：任何字段都可删除
+    if (table.get("color_field") or "") == f["key"]:
+        D.execute("UPDATE tables SET color_field='' WHERE id=?", (f["table_id"],))
     D.execute("DELETE FROM fields WHERE id=?", (fid,))
     # 清理记录中的该字段数据
     for r in load_records(f["table_id"]):
@@ -419,7 +558,16 @@ def table_options(tid):
     records = load_records(tid)
     out = {}
     for f in table["fields"]:
-        if f["type"] in ("select", "multi_select", "radio", "checkbox"):
+        if f["type"] == "color_tag":
+            opts = color_options(f["options"])
+            known = {o["value"] for o in opts}
+            for r in records:
+                v = str(r["data"].get(f["key"]) or "").strip()
+                if v and v not in known:
+                    opts.append({"value": v, "color": auto_color(len(opts))})
+                    known.add(v)
+            out[f["key"]] = opts
+        elif f["type"] in ("select", "multi_select", "radio", "checkbox"):
             vals = list(f["options"])
             for r in records:
                 v = r["data"].get(f["key"])
@@ -443,7 +591,7 @@ def list_records(tid):
     table = get_table(tid)
     if not table:
         return jsonify(ok=False, message="表不存在"), 404
-    records = apply_query(load_records(tid), table, request.args)
+    records = apply_query(decorate(table, load_records(tid)), table, request.args)
     total = len(records)
     mode = request.args.get("mode", "lazy")
     page = max(1, int(request.args.get("page", 1)))

@@ -48,9 +48,15 @@ def export_xlsx(table, records, template=False):
     ws.row_dimensions[1].height = 26
     ws.freeze_panes = "A2"
     if not template:
+        from .tables import calc_values
         for r_i, r in enumerate(records, 2):
+            calc = calc_values(table, r["data"])
             for c, f in enumerate(fields, 1):
-                cell = ws.cell(row=r_i, column=c, value=_cell_str(r["data"].get(f["key"])))
+                val = r["data"].get(f["key"])
+                if f["type"] == "date_diff":
+                    cv = calc.get(f["key"]) or {}
+                    val = cv.get("text", "")
+                cell = ws.cell(row=r_i, column=c, value=_cell_str(val))
                 cell.border = border
                 cell.alignment = Alignment(horizontal="left", vertical="center")
                 if f["key"] == "sn":
@@ -98,7 +104,10 @@ def import_xlsx(table, f):
         fl = label_map.get(h.lower())
         if fl is None:
             fl = key_map.get(h.lower())
-        if fl is not None:
+        if fl is not None and fl["type"] == "date_diff":
+            # 计算字段不入库，导入时忽略该列
+            ignored.append(h)
+        elif fl is not None:
             col_field[idx] = fl
         elif h:
             ignored.append(h)

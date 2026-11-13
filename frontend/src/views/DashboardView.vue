@@ -179,7 +179,11 @@ function renderPies() {
         type: 'pie', radius: ['40%', '66%'], center: ['50%', '44%'],
         itemStyle: { borderRadius: 6, borderWidth: 2, borderColor: store.dark ? '#13161a' : '#fff' },
         label: { show: false },
-        data: (c.items || []).map(it => ({ name: it.name, value: it.value }))
+        data: (c.items || []).map(it => {
+          const manual = c.colors && c.colors[it.name]
+          return manual ? { name: it.name, value: it.value, itemStyle: { color: manual } }
+            : { name: it.name, value: it.value }
+        })
       }],
       color: palette.value
     }, true)
