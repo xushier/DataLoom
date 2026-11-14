@@ -834,18 +834,18 @@ function fmtCell(v) {
   background: var(--dc-bg-soft); text-align: left;
 }
 
-/* 斑马纹：偶数行用主题色浅底，和行色条并存 */
+/* 斑马纹：偶数行用极浅主题色，能看出交替但不抢表头 */
 .dc-table :deep(.el-table__body tr.el-table__row--striped > td.el-table__cell) {
-  background: color-mix(in srgb, var(--dc-primary) 6%, var(--dc-bg-soft));
+  background: color-mix(in srgb, var(--dc-primary) 6%, var(--dc-card));
 }
 .dc-table :deep(.el-table__body tr:hover > td.el-table__cell) {
-  background: color-mix(in srgb, var(--dc-primary) 14%, var(--dc-bg-soft));
+  background: color-mix(in srgb, var(--dc-primary) 10%, var(--dc-card));
 }
 html.dark .dc-table :deep(.el-table__body tr.el-table__row--striped > td.el-table__cell) {
-  background: color-mix(in srgb, var(--dc-primary) 9%, var(--dc-card));
+  background: color-mix(in srgb, var(--dc-primary) 6%, var(--dc-card));
 }
 html.dark .dc-table :deep(.el-table__body tr:hover > td.el-table__cell) {
-  background: color-mix(in srgb, var(--dc-primary) 22%, var(--dc-card));
+  background: color-mix(in srgb, var(--dc-primary) 16%, var(--dc-card));
 }
 
 /* 多选值胶囊：按值取色，替代清一色的标签 */

@@ -304,6 +304,17 @@ html.dark .dc-table.el-table .el-table__tr.bg-row td.el-table__cell {
 .el-form-item__label { font-size: 13px; }
 .el-button { font-weight: 500; }
 
+/* 下拉选项：打开时默认高亮的第一项只做轻微提示，选中项才用主色浅底，
+   避免同时出现两处高亮被误认为选了多个值 */
+.el-select-dropdown__item.is-hovering:not(.is-selected) {
+  background: color-mix(in srgb, var(--dc-text) 5%, transparent);
+}
+.el-select-dropdown__item.is-selected {
+  background: color-mix(in srgb, var(--dc-primary) 13%, transparent);
+  color: var(--dc-primary);
+  font-weight: 600;
+}
+
 /* ---------- 数字等宽 ---------- */
 .tabular { font-variant-numeric: tabular-nums; }
 
