@@ -344,6 +344,9 @@
             <div class="backup-actions">
               <el-switch v-model="autoBackup" active-text="每日自动备份" @change="onAutoBackup" />
               <el-button type="primary" :icon="FolderAdd" :loading="backing" @click="doBackup">立即备份</el-button>
+              <el-button :icon="Upload" :loading="uploading" @click="pickDb">上传数据库恢复</el-button>
+              <input ref="dbFileInput" type="file" accept=".db" class="hidden-file"
+                     @change="onDbFile" />
             </div>
           </div>
           <el-table :data="backups" stripe size="small" class="dc-table" v-loading="backupsLoading">
@@ -367,7 +370,8 @@
           </el-table>
           <div class="muted backup-tip">
             备份包含全部数据表与系统数据，保存在服务器数据目录 backups 下，最多保留 10 个。
-            恢复将用备份文件覆盖当前全部数据，请谨慎操作。
+            恢复将用备份文件覆盖当前全部数据，请谨慎操作。<br>
+            也可直接上传本地生成的 .db 文件恢复，系统会先自动备份当前数据库再覆盖。
           </div>
         </div>
       </el-tab-pane>
@@ -739,7 +743,7 @@
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, FolderAdd, Delete, ArrowUp, ArrowDown } from '@element-plus/icons-vue'
+import { Plus, FolderAdd, Delete, ArrowUp, ArrowDown, Upload } from '@element-plus/icons-vue'
 import { http, downloadBlob } from '@/api'
 import { useApp, THEMES } from '@/store'
 import Logo from '@/components/Logo.vue'
@@ -933,6 +937,39 @@ async function doBackup() {
     ElMessage.success('备份完成')
     await loadBackups()
   } finally { backing.value = false }
+}
+
+const uploading = ref(false)
+const dbFileInput = ref(null)
+
+function pickDb() {
+  dbFileInput.value?.click()
+}
+
+async function onDbFile(e) {
+  const file = e.target.files?.[0]
+  e.target.value = ''
+  if (!file) return
+  if (!file.name.toLowerCase().endsWith('.db')) {
+    ElMessage.warning('请选择 .db 数据库文件')
+    return
+  }
+  try {
+    await ElMessageBox.confirm(
+      `确定用「${file.name}」覆盖当前全部数据吗？系统会先自动备份当前数据库。`,
+      '上传恢复数据库',
+      { type: 'warning', confirmButtonText: '上传并恢复', cancelButtonText: '取消' })
+  } catch { return }
+  uploading.value = true
+  try {
+    const fd = new FormData()
+    fd.append('file', file)
+    const res = await http.post('/backups/upload', fd)
+    ElMessage.success(res.message || '数据库已恢复，即将刷新页面')
+    setTimeout(() => location.reload(), 900)
+  } catch { /* 错误提示已由拦截器统一处理 */ } finally {
+    uploading.value = false
+  }
 }
 
 function fmtSize(n) {
@@ -1517,6 +1554,7 @@ onMounted(() => {
 /* 备份页：表单头 + 表格 + 提示 */
 .pane-backup { min-width: 700px; }
 .backup-actions { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.hidden-file { display: none; }
 .backup-tip { margin-top: 12px; font-size: 12px; line-height: 1.6; }
 
 /* 通知字体管理 */

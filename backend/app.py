@@ -951,16 +951,10 @@ def create_app():
             return jsonify(ok=False, message="备份不存在"), 404
         return send_from_directory(BACKUP_DIR, fn, as_attachment=True, download_name=fn)
 
-    @app.post("/api/backups/restore")
-    @admin_required
-    def restore_backup():
-        body = request.get_json(force=True, silent=True) or {}
-        fn = _safe_backup_name(body.get("name"))
-        if not fn:
-            return jsonify(ok=False, message="备份不存在"), 404
-        # 记录当前有效会话，恢复后回填（若用户仍存在），避免操作者被立即登出
+    def _apply_db_file(path):
+        """用指定数据库文件覆盖当前库，并保留仍有效的登录会话"""
         live = D.query("SELECT * FROM sessions WHERE expires_at > ?", (D.now_str(),))
-        src = sqlite3.connect(os.path.join(BACKUP_DIR, fn))
+        src = sqlite3.connect(path)
         dst = sqlite3.connect(D.DB_PATH)
         with dst:
             src.backup(dst)
@@ -975,6 +969,52 @@ def create_app():
                         (s["token"], s["user_id"], s["created_at"], s["expires_at"]))
         except Exception:
             pass
+
+    @app.post("/api/backups/upload")
+    @admin_required
+    def upload_backup():
+        """上传本地 .db 文件并恢复（先自动备份当前数据库）"""
+        f = request.files.get("file")
+        if not f or not f.filename:
+            return jsonify(ok=False, message="请选择数据库文件"), 400
+        if not f.filename.lower().endswith(".db"):
+            return jsonify(ok=False, message="仅支持 .db 数据库文件"), 400
+        tmp_dir = os.path.join(D.DATA_DIR, "tmp")
+        os.makedirs(tmp_dir, exist_ok=True)
+        tmp_path = os.path.join(
+            tmp_dir, "upload-%s.db" % D.now().strftime("%Y%m%d%H%M%S%f"))
+        f.save(tmp_path)
+        try:
+            chk = sqlite3.connect(tmp_path)
+            try:
+                names = {r[0] for r in chk.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'")}
+            finally:
+                chk.close()
+            if not {"users", "tables", "fields", "records"}.issubset(names):
+                return jsonify(ok=False,
+                               message="数据库结构不匹配（缺少 users/tables/fields/records）"), 400
+            _create_backup("before_upload_restore", g.req_user_name())
+            _apply_db_file(tmp_path)
+            D.log_op(g.req_user_name(), "backup_upload_restore", target=f.filename)
+            D.sys_log("WARN", "BACKUP", "已上传并恢复数据库：" + str(f.filename))
+            return jsonify(ok=True, message="数据库已恢复，即将刷新页面")
+        except sqlite3.Error:
+            return jsonify(ok=False, message="不是有效的 SQLite 数据库"), 400
+        finally:
+            try:
+                os.remove(tmp_path)
+            except OSError:
+                pass
+
+    @app.post("/api/backups/restore")
+    @admin_required
+    def restore_backup():
+        body = request.get_json(force=True, silent=True) or {}
+        fn = _safe_backup_name(body.get("name"))
+        if not fn:
+            return jsonify(ok=False, message="备份不存在"), 404
+        _apply_db_file(os.path.join(BACKUP_DIR, fn))
         D.log_op(g.req_user_name(), "backup_restore", target=fn)
         D.sys_log("WARN", "BACKUP", "已从备份恢复数据：" + fn)
         return jsonify(ok=True, message="恢复完成")
