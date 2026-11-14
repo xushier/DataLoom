@@ -32,12 +32,12 @@
         </div>
         <el-alert v-if="entryErrs[i]" class="entry-err" type="error"
                   :title="entryErrs[i]" :closable="false" show-icon />
-        <el-form :ref="el => setFormRef(i, el)" :model="e" label-width="96px" label-position="left"
+        <el-form :ref="el => setFormRef(i, el)" :model="e" label-position="top"
                  class="rec-form" @submit.prevent="onSubmit">
-          <el-row :gutter="16">
-            <el-col v-for="f in fields" :key="f.key" :xs="24" :sm="12">
-              <el-form-item :label="f.label" :prop="f.key"
-                            :rules="rules(f)" :required="isShowRequired(f)">
+          <div class="form-grid">
+            <el-form-item v-for="f in orderedFields" :key="f.key" :prop="f.key"
+                          :label="f.label" :rules="rules(f)" :required="isShowRequired(f)"
+                          :class="['form-cell', { 'span-2': isWideField(f) }]">
                 <!-- 序号：自动 -->
                 <el-input v-if="f.key === 'sn'" :model-value="snDisplay" disabled>
                   <template #suffix><span class="muted">自动</span></template>
@@ -58,8 +58,8 @@
                                  :fetch-suggestions="(q, cb) => fetchSuggest(f.key, q, cb)"
                                  placeholder="可搜索选择，无则直接输入" clearable />
                 <!-- 单选组 -->
-                <el-radio-group v-else-if="f.type === 'radio'" v-model="e[f.key]">
-                  <el-radio v-for="o in optValues(f.key)" :key="o" :value="o" border size="small">{{ o }}</el-radio>
+                <el-radio-group v-else-if="f.type === 'radio'" v-model="e[f.key]" class="opt-group">
+                  <el-radio v-for="o in optValues(f.key)" :key="o" :value="o">{{ o }}</el-radio>
                 </el-radio-group>
                 <!-- 彩色标签：可清空，选中后按选项颜色显示 -->
                 <div v-else-if="f.type === 'color_tag'" class="ct-picker">
@@ -118,9 +118,8 @@
                   </div>
                 </div>
                 <!-- 复选组：平铺多选 -->
-                <el-checkbox-group v-else-if="f.type === 'checkbox'" v-model="e[f.key]">
-                  <el-checkbox v-for="o in optValues(f.key)" :key="o" :value="o" border
-                               size="small">{{ o }}</el-checkbox>
+                <el-checkbox-group v-else-if="f.type === 'checkbox'" v-model="e[f.key]" class="opt-group">
+                  <el-checkbox v-for="o in optValues(f.key)" :key="o" :value="o">{{ o }}</el-checkbox>
                 </el-checkbox-group>
                 <!-- 开关 -->
                 <el-switch v-else-if="f.type === 'switch'" v-model="e[f.key]" />
@@ -155,12 +154,11 @@
                                 :default-time="defaultTime" />
                 <!-- 多行文本 -->
                 <el-input v-else-if="f.type === 'textarea'" v-model="e[f.key]"
-                          type="textarea" :rows="2" placeholder="" />
+                          type="textarea" :rows="3" placeholder="" />
                 <!-- 文本 -->
                 <el-input v-else v-model="e[f.key]" placeholder="" />
-              </el-form-item>
-            </el-col>
-          </el-row>
+            </el-form-item>
+          </div>
         </el-form>
       </div>
       <el-button v-if="!isEdit" class="add-entry" :disabled="saving"
@@ -198,6 +196,16 @@ const show = computed({
   set: v => emit('update:modelValue', v)
 })
 const fields = computed(() => props.table?.fields || [])
+
+/* 表单栅格：短控件两列并排，长控件独占整行；同类字段内部保持原有顺序 */
+const WIDE_TYPES = new Set(['textarea', 'quantity', 'multi_select', 'checkbox', 'radio'])
+function isWideField(f) { return WIDE_TYPES.has(f.type) }
+const orderedFields = computed(() => {
+  const short = []
+  const wide = []
+  for (const f of fields.value) (isWideField(f) ? wide : short).push(f)
+  return [...short, ...wide]
+})
 const isEdit = computed(() => !!props.record)
 const title = computed(() =>
   `${isEdit.value ? '编辑记录' : '新增数据'} · ${props.table?.name || ''}`)
@@ -689,8 +697,40 @@ async function onSubmit() {
 .entry-err { margin-bottom: 10px; }
 .add-entry { width: 100%; border-style: dashed; border-radius: 8px;
              margin-bottom: 0; height: 36px; }
-.rec-form :deep(.el-form-item) { margin-bottom: 14px; }
-.rec-form :deep(.el-form-item__label) { font-size: 13px; }
+/* 表单：顶部标签 + 两列栅格，控件统一撑满，长控件整行 */
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0 16px;
+}
+.form-cell { min-width: 0; }
+.form-cell.span-2 { grid-column: 1 / -1; }
+.rec-form :deep(.el-form-item) { margin-bottom: 12px; }
+.rec-form :deep(.el-form-item__label) {
+  display: block; font-size: 12px; font-weight: 500;
+  color: var(--el-text-color-secondary);
+  line-height: 1.4; padding: 0 0 4px;
+}
+.rec-form :deep(.el-form-item__content) { line-height: normal; }
+.rec-form :deep(.el-form-item__content > .el-select),
+.rec-form :deep(.el-form-item__content > .el-autocomplete),
+.rec-form :deep(.el-form-item__content > .el-date-editor),
+.rec-form :deep(.el-form-item__content > .el-input-number),
+.rec-form :deep(.el-form-item__content > .el-input),
+.rec-form :deep(.el-form-item__content > .el-textarea) { width: 100%; }
+
+/* 单选 / 复选：普通样式平铺，换行对齐 */
+.opt-group {
+  display: flex; flex-wrap: wrap; align-items: center;
+  gap: 4px 18px; min-height: 32px;
+}
+.opt-group :deep(.el-radio),
+.opt-group :deep(.el-checkbox) { margin-right: 0; height: 24px; }
+
+@media (max-width: 720px) {
+  .form-grid { grid-template-columns: minmax(0, 1fr); }
+  .form-cell.span-2 { grid-column: auto; }
+}
 .w-full { width: 100%; }
 
 /* 彩色标签 */

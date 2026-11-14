@@ -307,8 +307,10 @@ html.dark .dc-table.el-table .el-table__tr.bg-row td.el-table__cell {
 /* ---------- 数字等宽 ---------- */
 .tabular { font-variant-numeric: tabular-nums; }
 
-/* ---------- 滚动条平滑 ---------- */
-.el-scrollbar__wrap { scroll-behavior: smooth; }
+/* ---------- 滚动 ----------
+   不使用 scroll-behavior: smooth：全局平滑滚动会让宽表横向拖动产生滞后感，
+   并与 el-table 固定列的位置同步相互追赶，表现为滚动卡顿 */
+.el-scrollbar__wrap { overscroll-behavior: contain; }
 
 /* ---------- 移动端 ---------- */
 @media (max-width: 768px) {

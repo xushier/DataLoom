@@ -70,13 +70,14 @@
 
     <!-- 数据表 -->
     <div class="card table-card" v-loading="loading">
-      <el-table ref="tableRef" :data="records" :stripe="!rowColorField" size="small"
+      <el-table ref="tableRef" :data="records" :stripe="true" size="small"
                 class="dc-table" border
                 height="100%" :row-key="r => r.id"
                 :row-class-name="rowClassName" :row-style="rowStyle"
                 :highlight-current-row="selMode === 'single'"
                 :default-sort="{ prop: 'data.sn', order: 'descending' }"
                 @sort-change="onSortChange" @row-click="onRowClick"
+                @row-dblclick="onRowDblclick"
                 @selection-change="onSelectionChange"
                 @header-dragend="onHeaderDragend" v-el-scroll>
         <template #empty>
@@ -95,38 +96,33 @@
                          :label="f.label" sortable="custom"
                          :align="f.key === 'sn' ? 'center' : 'left'"
                          :width="f.key === 'sn' ? (savedWidths.sn || 72) : savedWidths[f.key]"
-                         :min-width="savedWidths[f.key] ? undefined : autoWidths[f.key]"
-                         show-overflow-tooltip>
+                         :min-width="savedWidths[f.key] ? undefined : autoWidths[f.key]">
           <template #default="{ row }">
             <span v-if="f.key === 'sn'" class="tabular">{{ row.data.sn }}</span>
             <!-- 彩色标签：大色块徽章 -->
             <span v-else-if="f.type === 'color_tag'">
               <span v-if="row.data[f.key]" class="ct-badge"
                     :style="badgeStyle(optionColor(f, row.data[f.key]))">{{ row.data[f.key] }}</span>
-              <span v-else class="muted">—</span>
             </span>
-            <!-- 评分：只读星级 -->
-            <span v-else-if="f.type === 'rating'" class="rating-cell">
-              <el-rate v-if="Number(row.data[f.key]) > 0" :model-value="Number(row.data[f.key])"
-                       :max="ratingMax(f)" disabled size="small" />
-              <span v-else class="muted">—</span>
+            <!-- 评分：行内直接点星，空值显示空心星 -->
+            <span v-else-if="f.type === 'rating'" class="rating-cell"
+                  :class="{ 'is-saving': ratingBusy[ratingKey(row, f)] }"
+                  @click.stop @dblclick.stop>
+              <el-rate :model-value="ratingValue(f, row)" :max="ratingMax(f)"
+                       :colors="RATING_COLORS" :disabled="!canEdit(row)"
+                       :clearable="canEdit(row)" size="small"
+                       @change="v => onRate(f, row, v)" />
             </span>
             <!-- 日期差值：后端实时计算，命中终态后冻结 -->
-            <span v-else-if="f.type === 'date_diff'" class="dd-cell">
-              {{ row.calc?.[f.key]?.text || '—' }}
-              <el-tooltip v-if="row.calc?.[f.key]?.frozen"
-                          :content="`结束于 ${row.calc[f.key].frozen}，已停止累加`"
-                          placement="top">
-                <span class="dd-frozen">已结束</span>
-              </el-tooltip>
-              <el-tooltip v-else-if="row.calc?.[f.key]?.pending"
-                          content="尚未命中起始条件，命中后开始计算" placement="top">
-                <span class="dd-frozen">未开始</span>
-              </el-tooltip>
-              <el-tooltip v-else-if="ddArmed(f) && row.calc?.[f.key]?.started"
-                          :content="`自 ${row.calc[f.key].started} 起算`" placement="top">
-                <span class="dd-start">起算</span>
-              </el-tooltip>
+            <span v-else-if="f.type === 'date_diff'" class="dd-cell"
+                  :title="row.calc?.[f.key]?.text || ''">
+              <span v-if="row.calc?.[f.key]?.text">{{ row.calc[f.key].text }}</span>
+              <span v-if="row.calc?.[f.key]?.frozen" class="dd-frozen"
+                    :title="`结束于 ${row.calc[f.key].frozen}，已停止累加`">已结束</span>
+              <span v-else-if="row.calc?.[f.key]?.pending" class="dd-frozen"
+                    title="尚未命中起始条件，命中后开始计算">未开始</span>
+              <span v-else-if="ddArmed(f) && row.calc?.[f.key]?.started" class="dd-start"
+                    :title="`自 ${row.calc[f.key].started} 起算`">起算</span>
             </span>
             <!-- 数量明细：总数 + 分项，悬停查看完整明细 -->
             <span v-else-if="f.type === 'quantity'" class="qty-cell">
@@ -138,7 +134,7 @@
                             :width="240" trigger="hover" popper-class="qty-pop">
                   <template #reference>
                     <span class="qty-chips">
-                      <span v-for="it in qtyItems(row.data[f.key]).slice(0, 2)" :key="it.name"
+                      <span v-for="(it, i) in qtyItems(row.data[f.key]).slice(0, 2)" :key="i"
                             class="qty-chip">{{ it.name }} {{ fmtNum(it.qty) }}</span>
                       <span v-if="qtyItems(row.data[f.key]).length > 2" class="qty-more">
                         +{{ qtyItems(row.data[f.key]).length - 2 }}
@@ -148,36 +144,30 @@
                   <div class="qty-pop-head">
                     明细 · 合计 {{ fmtNum(qtyTotal(row.data[f.key])) }}{{ qtyUnit(f) }}
                   </div>
-                  <div v-for="it in qtyItems(row.data[f.key])" :key="it.name" class="qty-pop-row">
+                  <div v-for="(it, i) in qtyItems(row.data[f.key])" :key="i" class="qty-pop-row">
                     <span class="qty-pop-name">{{ it.name }}</span>
                     <span class="tabular">{{ fmtNum(it.qty) }}</span>
                   </div>
                 </el-popover>
               </template>
-              <span v-else class="muted">—</span>
             </span>
+            <!-- 多选：按值取色的浅色胶囊，避免整表一片同色标签 -->
             <template v-else-if="Array.isArray(row.data[f.key])">
-              <template v-if="row.data[f.key].length">
-                <el-tag v-for="v in row.data[f.key]" :key="v" size="small" effect="plain"
-                        style="margin-right: 4px">{{ v }}</el-tag>
-              </template>
-              <span v-else class="muted">—</span>
+              <span v-for="(v, i) in row.data[f.key]" :key="i"
+                    class="cell-pill" :style="pillStyle(f, v)">{{ v }}</span>
             </template>
-            <el-tag v-else-if="f.type === 'switch'" size="small" :type="row.data[f.key] ? 'success' : 'info'">
-              {{ row.data[f.key] ? '开' : '关' }}
-            </el-tag>
-            <span v-else>{{ fmtCell(row.data[f.key]) }}</span>
+            <span v-else-if="f.type === 'switch'" class="sw-pill"
+                  :class="{ 'is-on': row.data[f.key] }">{{ row.data[f.key] ? '开' : '关' }}</span>
+            <span v-else class="cell-text" :title="fmtCell(row.data[f.key])">{{ fmtCell(row.data[f.key]) }}</span>
           </template>
         </el-table-column>
-        <el-table-column v-if="store.authed" label="操作" width="132" fixed="right" align="center">
+        <el-table-column v-if="store.authed" label="操作" width="132" fixed="right" align="center"
+                         class-name="op-cell" label-class-name="op-cell">
           <template #default="{ row }">
-            <template v-if="store.isAdmin || row.created_by === store.user?.username">
-              <div class="op-btns">
-                <el-button size="small" type="primary" text bg @click="openEdit(row)">编辑</el-button>
-                <el-button size="small" type="danger" text bg @click="onDelete(row)">删除</el-button>
-              </div>
-            </template>
-            <span v-else class="muted" style="font-size: 12px">—</span>
+            <div v-if="canEdit(row)" class="op-btns" @dblclick.stop>
+              <el-button size="small" type="primary" text bg @click="openEdit(row)">编辑</el-button>
+              <el-button size="small" type="danger" text bg @click="onDelete(row)">删除</el-button>
+            </div>
           </template>
         </el-table-column>
       </el-table>
@@ -375,6 +365,47 @@ function ratingMax(f) {
   return Number.isFinite(m) && m >= 3 ? m : 5
 }
 
+/* ---------------- 行内评分 / 多选配色 ---------------- */
+
+const RATING_COLORS = ['#e8a33d', '#e8a33d', '#e8a33d']
+const ratingBusy = reactive({})
+
+function ratingKey(row, f) { return `${row.id}:${f.key}` }
+function ratingValue(f, row) {
+  const n = Number(row.data[f.key])
+  return Number.isFinite(n) ? n : 0
+}
+
+/* 点击星星即保存：先本地更新，失败回滚 */
+async function onRate(f, row, v) {
+  if (!canEdit(row)) return
+  const key = ratingKey(row, f)
+  if (ratingBusy[key]) return
+  const old = row.data[f.key]
+  const next = Number(v) || 0
+  ratingBusy[key] = true
+  row.data[f.key] = next
+  try {
+    const data = { ...row.data, [f.key]: next }
+    await http.put(`/records/${row.id}`, { data })
+  } catch (e) {
+    row.data[f.key] = old
+    ElMessage.error(e?.response?.data?.message || '评分保存失败')
+  } finally {
+    delete ratingBusy[key]
+  }
+}
+
+/* 多选标签：同字段不同类型也能一眼区分，按「字段 + 值」稳定取色 */
+const PILL_COLORS = ['#3a7bd5', '#2f9e44', '#d98a1f', '#c9506e',
+                     '#7b5fc9', '#13a8a8', '#c0563f', '#5a7d9a']
+function pillStyle(f, v) {
+  const s = `${f.key}:${v}`
+  let h = 0
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
+  return { '--pill': PILL_COLORS[h % PILL_COLORS.length] }
+}
+
 /* ---------------- 数量明细 ---------------- */
 
 function ddArmed(f) {
@@ -397,7 +428,7 @@ function qtyItems(v) {
     : []
 }
 function fmtNum(n) {
-  if (n === null || n === undefined || n === '') return '—'
+  if (n === null || n === undefined || n === '') return ''
   const num = Number(n)
   return Number.isInteger(num) ? String(num) : String(num)
 }
@@ -553,6 +584,19 @@ function openEdit(row) {
   recordVisible.value = true
 }
 
+/* 是否可编辑该行：管理员或本人创建 */
+function canEdit(row) {
+  return store.isAdmin || (store.authed && row.created_by === store.user?.username)
+}
+
+/* 双击行直接打开编辑；单元格内的按钮、评分、选择框不触发 */
+function onRowDblclick(row, column, event) {
+  if (!canEdit(row)) return
+  const el = event?.target
+  if (el?.closest?.('.op-btns, .rating-cell, button, a, input, textarea, .el-checkbox, .el-radio')) return
+  openEdit(row)
+}
+
 async function onSaved(added = 0) {
   await loadOptions()
   reload()
@@ -705,9 +749,11 @@ function cellWidth(f, v, row) {
    多余宽度仍按比例分给各列，尽量减少横向滚动条 */
 const autoWidths = computed(() => {
   const map = {}
+  /* 只按前 60 行估宽：懒加载不断追加数据时避免重复全量计算造成卡顿 */
+  const sample = records.value.slice(0, 60)
   for (const f of visibleFields.value) {
     let w = 0
-    for (const r of records.value) {
+    for (const r of sample) {
       const cw = cellWidth(f, r.data[f.key], r)
       if (cw > w) { w = cw; if (w > 470) break }
     }
@@ -788,14 +834,74 @@ function fmtCell(v) {
   background: var(--dc-bg-soft); text-align: left;
 }
 
+/* 斑马纹：偶数行用主题色浅底，和行色条并存 */
+.dc-table :deep(.el-table__body tr.el-table__row--striped > td.el-table__cell) {
+  background: color-mix(in srgb, var(--dc-primary) 6%, var(--dc-bg-soft));
+}
+.dc-table :deep(.el-table__body tr:hover > td.el-table__cell) {
+  background: color-mix(in srgb, var(--dc-primary) 14%, var(--dc-bg-soft));
+}
+html.dark .dc-table :deep(.el-table__body tr.el-table__row--striped > td.el-table__cell) {
+  background: color-mix(in srgb, var(--dc-primary) 9%, var(--dc-card));
+}
+html.dark .dc-table :deep(.el-table__body tr:hover > td.el-table__cell) {
+  background: color-mix(in srgb, var(--dc-primary) 22%, var(--dc-card));
+}
+
+/* 多选值胶囊：按值取色，替代清一色的标签 */
+.cell-pill {
+  display: inline-block; margin: 1px 4px 1px 0; padding: 0 7px;
+  border-radius: 5px; font-size: 12px; line-height: 18px; white-space: nowrap;
+  background: color-mix(in srgb, var(--pill) 13%, transparent);
+  color: color-mix(in srgb, var(--pill) 82%, var(--dc-text));
+}
+html.dark .cell-pill {
+  background: color-mix(in srgb, var(--pill) 24%, transparent);
+  color: color-mix(in srgb, var(--pill) 62%, white);
+}
+
+/* 开关：轻量状态胶囊 */
+.sw-pill {
+  display: inline-block; padding: 0 7px; border-radius: 5px;
+  font-size: 12px; line-height: 18px; white-space: nowrap;
+  background: var(--el-fill-color); color: var(--el-text-color-secondary);
+}
+.sw-pill.is-on {
+  background: color-mix(in srgb, #2f9e44 13%, transparent); color: #2f9e44;
+}
+html.dark .sw-pill.is-on {
+  background: color-mix(in srgb, #2f9e44 26%, transparent); color: #7fd39a;
+}
+
+/* 操作列：半透明毛玻璃，横向滚动时不遮挡下方内容 */
+.table-card :deep(.el-table__body .el-table__cell.op-cell) {
+  background: color-mix(in srgb, var(--dc-card) 72%, transparent) !important;
+  backdrop-filter: blur(10px) saturate(1.12);
+  -webkit-backdrop-filter: blur(10px) saturate(1.12);
+  box-shadow: -10px 0 12px -10px rgba(20, 30, 40, .22);
+}
+.table-card :deep(.el-table__header .el-table__cell.op-cell) {
+  background: color-mix(in srgb, var(--dc-bg-soft) 84%, transparent) !important;
+  backdrop-filter: blur(10px) saturate(1.12);
+  -webkit-backdrop-filter: blur(10px) saturate(1.12);
+  box-shadow: -10px 0 12px -10px rgba(20, 30, 40, .22);
+}
+
 /* 彩色标签：醒目大色块徽章 */
 .ct-badge {
   display: inline-block; padding: 2px 12px; border-radius: 7px;
   font-size: 12px; font-weight: 600; line-height: 20px;
   min-width: 56px; text-align: center; white-space: nowrap;
 }
-.rating-cell :deep(.el-rate) { height: 18px; display: inline-flex; }
-.rating-cell :deep(.el-rate__icon) { font-size: 15px; margin-right: 2px; }
+.rating-cell { display: inline-flex; align-items: center; height: 20px; }
+.rating-cell :deep(.el-rate) {
+  height: 18px; display: inline-flex;
+  --el-rate-void-color: color-mix(in srgb, var(--dc-text-soft) 36%, transparent);
+}
+.rating-cell :deep(.el-rate__icon) { font-size: 15px; margin-right: 1px; }
+.rating-cell :deep(.el-rate__item) { cursor: pointer; }
+.rating-cell :deep(.el-rate.is-disabled .el-rate__item) { cursor: default; }
+.rating-cell.is-saving { opacity: .5; }
 
 /* 日期差值：终态后带「已结束」标记 */
 .dd-cell { display: inline-flex; align-items: center; gap: 5px; }
