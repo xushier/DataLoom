@@ -37,20 +37,34 @@
           <FilterPanel :key="activeId" ref="filterRef" v-model="filters"
                        :fields="fields" :options="options" @update:model-value="reload" />
         </el-popover>
-        <el-popover :width="260" trigger="click">
+        <el-popover :width="290" trigger="click" persistent>
           <template #reference>
             <el-button :icon="Menu">列设置</el-button>
           </template>
           <div class="cols-pop">
             <div class="cols-head">
-              <span class="muted">显示列</span>
-              <el-button link type="primary" size="small" @click="allColumns(true)">全选</el-button>
+              <span class="muted">显示列 · 拖动排序</span>
+              <span class="cols-actions">
+                <el-button link type="primary" size="small" @click="allColumns(true)">全选</el-button>
+                <el-button link size="small" @click="allColumns(false)">清空</el-button>
+              </span>
             </div>
-            <el-checkbox-group v-model="visibleKeys">
-              <el-checkbox v-for="f in fields" :key="f.key" :value="f.key" :label="f.key">
-                {{ f.label }}
-              </el-checkbox>
-            </el-checkbox-group>
+            <div class="cols-list">
+              <div v-for="(f, i) in fields" :key="f.key"
+                   class="cols-item"
+                   :class="{ dragging: dragColIndex === i, 'drag-over': colDragOver === i && dragColIndex !== i }"
+                   draggable="true"
+                   @dragstart="onColDragStart(i, $event)"
+                   @dragover.prevent="onColDragOver(i)"
+                   @drop.prevent="onColDrop(i)"
+                   @dragend="onColDragEnd">
+                <el-icon class="drag-handle"><Rank /></el-icon>
+                <el-checkbox :model-value="visibleKeys.includes(f.key)"
+                             @update:model-value="v => toggleColumn(f.key, v)">
+                  {{ f.label }}
+                </el-checkbox>
+              </div>
+            </div>
             <div class="pop-sec muted">表格外观</div>
             <div class="pop-row">
               <span>选择行</span>
@@ -241,7 +255,7 @@
 <script setup>
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { Plus, Upload, Download, Search, Filter, Menu, Delete } from '@element-plus/icons-vue'
+import { Plus, Upload, Download, Search, Filter, Menu, Delete, Rank } from '@element-plus/icons-vue'
 import { http, downloadBlob } from '@/api'
 import { useApp } from '@/store'
 import RecordDialog from '@/components/RecordDialog.vue'
@@ -486,6 +500,53 @@ watch(visibleKeys, () => {
 
 function allColumns(all) {
   visibleKeys.value = all ? fields.value.map(f => f.key) : []
+}
+
+function toggleColumn(key, on) {
+  if (on) {
+    if (!visibleKeys.value.includes(key)) visibleKeys.value = [...visibleKeys.value, key]
+  } else {
+    visibleKeys.value = visibleKeys.value.filter(k => k !== key)
+  }
+}
+
+/* 列设置：拖动调整列顺序，顺序写回字段排序，数据表与字段管理保持一致 */
+const dragColIndex = ref(-1)
+const colDragOver = ref(-1)
+
+function onColDragStart(i, e) {
+  dragColIndex.value = i
+  try {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', String(i))
+  } catch { /* 部分浏览器不支持 */ }
+}
+
+function onColDragOver(i) {
+  if (dragColIndex.value >= 0) colDragOver.value = i
+}
+
+function onColDragEnd() {
+  dragColIndex.value = -1
+  colDragOver.value = -1
+}
+
+async function onColDrop(i) {
+  const from = dragColIndex.value
+  onColDragEnd()
+  if (from < 0 || from === i) return
+  const list = [...fields.value]
+  const [item] = list.splice(from, 1)
+  list.splice(i, 0, item)
+  fields.value = list
+  try {
+    await http.post(`/tables/${activeId.value}/fields/reorder`, { ids: list.map(f => f.id) })
+    const t = tables.value.find(x => x.id === activeId.value)
+    if (t) t.fields = list
+    ElMessage.success('列顺序已更新')
+  } catch {
+    await loadTables()
+  }
 }
 
 async function load(append = false) {
@@ -820,7 +881,27 @@ function fmtCell(v) {
   display: flex; justify-content: space-between; align-items: center;
   margin-bottom: 6px;
 }
-.cols-pop .el-checkbox-group { display: flex; flex-direction: column; gap: 2px; }
+.cols-actions { display: flex; align-items: center; gap: 2px; }
+.cols-list {
+  display: flex; flex-direction: column; gap: 1px;
+  max-height: 300px; overflow-y: auto; overscroll-behavior: contain;
+  margin: 0 -4px; padding: 0 4px 2px;
+}
+.cols-item {
+  display: flex; align-items: center; gap: 6px;
+  padding: 1px 6px; border-radius: 6px; cursor: grab;
+  transition: background-color .15s, box-shadow .15s;
+}
+.cols-item:hover { background: var(--dc-bg-soft); }
+.cols-item.dragging { opacity: .45; }
+.cols-item.drag-over { box-shadow: inset 0 2px 0 var(--dc-primary); }
+.cols-item .drag-handle { font-size: 14px; color: var(--dc-text-soft); flex: none; }
+.cols-item :deep(.el-checkbox) { flex: 1; min-width: 0; height: 28px; margin-right: 0; }
+.cols-item :deep(.el-checkbox__label) {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.cols-item:has(.el-checkbox.is-checked) :deep(.el-checkbox__label) { color: var(--dc-text); }
+.cols-item:not(:has(.el-checkbox.is-checked)) :deep(.el-checkbox__label) { color: var(--dc-text-soft); }
 .pop-sec { margin: 10px 0 4px; font-size: 12px; }
 .pop-row {
   display: flex; justify-content: space-between; align-items: center;

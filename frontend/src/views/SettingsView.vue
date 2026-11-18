@@ -492,12 +492,14 @@
 
     <!-- 字段管理 -->
     <el-dialog v-model="fieldsOpen" :title="`字段管理 · ${fieldsTable?.name || ''}`"
-               width="720px" append-to-body destroy-on-close>
+               width="1080px" style="max-width: 94vw" top="6vh"
+               append-to-body destroy-on-close>
       <div class="fields-head">
         <span class="muted">所有字段均可重命名、改类型或删除；下拉类字段的新值将自动加入可选值</span>
         <el-button type="primary" size="small" :icon="Plus" @click="openFieldEdit(null)">添加字段</el-button>
       </div>
-      <el-table :data="editFields" stripe size="small" class="dc-table">
+      <el-table :data="editFields" stripe size="small" class="dc-table"
+                max-height="calc(78vh - 170px)">
         <el-table-column prop="label" label="字段名" min-width="110" />
         <el-table-column label="类型" width="108" align="center">
           <template #default="{ row }">
@@ -1262,12 +1264,12 @@ async function saveField() {
     ElMessage.success('字段已保存')
     fieldOpen.value = false
     await loadTables()
-    const t = tables.value.find(x => x.id === fieldForm.table_id)
-    if (t) {
-      fieldsTable.value = t
-      editFields.value = t.fields || []
+    const tbl = tables.value.find(x => x.id === fieldForm.table_id)
+    if (tbl) {
+      fieldsTable.value = tbl
+      editFields.value = tbl.fields || []
     }
-  } finally { savingField.value = false }
+  } catch { /* 错误已由请求拦截器提示 */ } finally { savingField.value = false }
 }
 
 async function deleteField(f) {
