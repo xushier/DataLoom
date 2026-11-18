@@ -32,11 +32,21 @@ def now():
     """当前时间（默认东八区）"""
     return datetime.now(_TZ)
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 GITHUB_URL = "https://github.com/xushier/dataloom"
 AUTHOR = "段松博"
 
 CHANGELOG = [
+    {
+        "version": "2.2.0",
+        "date": "2026-11-18",
+        "items": [
+            "开关字段改为列表内可直接点击的开关控件，点击即保存，失败自动回滚",
+            "列设置支持拖动调整列顺序，并可勾选控制列的显示与隐藏",
+            "字段管理弹窗加宽上移，字段表格改为弹窗内独立纵向滚动",
+            "修复新增字段点击保存无响应的问题",
+        ],
+    },
     {
         "version": "2.1.0",
         "date": "2026-11-14",
