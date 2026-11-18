@@ -170,8 +170,15 @@
               <span v-for="(v, i) in row.data[f.key]" :key="i"
                     class="cell-pill" :style="pillStyle(f, v)">{{ v }}</span>
             </template>
-            <span v-else-if="f.type === 'switch'" class="sw-pill"
-                  :class="{ 'is-on': row.data[f.key] }">{{ row.data[f.key] ? '开' : '关' }}</span>
+            <!-- 开关：列表内直接切换，点击即保存 -->
+            <span v-else-if="f.type === 'switch'" class="sw-cell"
+                  :class="{ 'is-saving': switchBusy[switchKey(row, f)] }"
+                  @click.stop @dblclick.stop>
+              <el-switch :model-value="!!row.data[f.key]" size="small"
+                         :loading="switchBusy[switchKey(row, f)]"
+                         :disabled="!canEdit(row) || switchBusy[switchKey(row, f)]"
+                         @change="v => onToggle(f, row, v)" />
+            </span>
             <span v-else class="cell-text" :title="fmtCell(row.data[f.key])">{{ fmtCell(row.data[f.key]) }}</span>
           </template>
         </el-table-column>
@@ -385,6 +392,27 @@ const RATING_COLORS = ['#e8a33d', '#e8a33d', '#e8a33d']
 const ratingBusy = reactive({})
 
 function ratingKey(row, f) { return `${row.id}:${f.key}` }
+
+/* 开关字段：在列表内点击直接保存，失败回滚 */
+const switchBusy = reactive({})
+function switchKey(row, f) { return `${row.id}:${f.key}` }
+
+async function onToggle(f, row, v) {
+  if (!canEdit(row)) return
+  const key = switchKey(row, f)
+  if (switchBusy[key]) return
+  const old = !!row.data[f.key]
+  switchBusy[key] = true
+  row.data[f.key] = v
+  try {
+    await http.put(`/records/${row.id}`, { data: { ...row.data, [f.key]: v } })
+  } catch (e) {
+    row.data[f.key] = old
+    ElMessage.error(e?.response?.data?.message || '开关保存失败')
+  } finally {
+    delete switchBusy[key]
+  }
+}
 function ratingValue(f, row) {
   const n = Number(row.data[f.key])
   return Number.isFinite(n) ? n : 0
@@ -654,7 +682,7 @@ function canEdit(row) {
 function onRowDblclick(row, column, event) {
   if (!canEdit(row)) return
   const el = event?.target
-  if (el?.closest?.('.op-btns, .rating-cell, button, a, input, textarea, .el-checkbox, .el-radio')) return
+  if (el?.closest?.('.op-btns, .rating-cell, .sw-cell, button, a, input, textarea, .el-checkbox, .el-radio')) return
   openEdit(row)
 }
 
@@ -803,7 +831,7 @@ function cellWidth(f, v, row) {
     // 多选标签：每个标签自带内边距、边框与间距
     return v.reduce((s, x) => s + textWidth(String(x)) + 24, 0) + (v.length - 1) * 4
   }
-  if (f.type === 'switch') return 44
+  if (f.type === 'switch') return 58
   return textWidth(String(v))
 }
 /* 按表头与已加载数据的实际内容估宽：窄数据列自动收窄、宽列有上限，
@@ -941,17 +969,13 @@ html.dark .cell-pill {
   color: color-mix(in srgb, var(--pill) 62%, white);
 }
 
-/* 开关：轻量状态胶囊 */
-.sw-pill {
-  display: inline-block; padding: 0 7px; border-radius: 5px;
-  font-size: 12px; line-height: 18px; white-space: nowrap;
-  background: var(--el-fill-color); color: var(--el-text-color-secondary);
-}
-.sw-pill.is-on {
-  background: color-mix(in srgb, #2f9e44 13%, transparent); color: #2f9e44;
-}
-html.dark .sw-pill.is-on {
-  background: color-mix(in srgb, #2f9e44 26%, transparent); color: #7fd39a;
+/* 开关：列表内直接切换 */
+.sw-cell { display: inline-flex; align-items: center; line-height: 1; }
+.sw-cell.is-saving { opacity: .6; }
+.sw-cell :deep(.el-switch) {
+  --el-switch-on-color: #2f9e44;
+  --el-switch-off-color: color-mix(in srgb, var(--dc-text-soft) 28%, transparent);
+  vertical-align: middle;
 }
 
 /* 操作列：半透明毛玻璃，横向滚动时不遮挡下方内容 */
