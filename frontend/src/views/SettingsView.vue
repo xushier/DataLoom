@@ -604,6 +604,10 @@
           </el-select>
           <div class="field-tip muted">存入与导入时按该精度自动取整，留空表示不处理</div>
         </el-form-item>
+        <el-form-item v-if="fieldForm.type === 'number'" label="统计合计">
+          <el-switch v-model="fieldForm.numAggregate" />
+          <div class="field-tip muted">开启后在表格底部显示该列合计值（按当前筛选结果统计）</div>
+        </el-form-item>
         <el-form-item v-if="isSelType(fieldForm.type)" label="可选值">
           <el-select v-model="fieldForm.options" multiple filterable allow-create
                      default-first-option placeholder="输入后回车添加，可预先配置" class="w-full">
@@ -1022,7 +1026,7 @@ const fieldForm = reactive({
   id: null, table_id: null, label: '', type: 'text', required: false,
   default_value: '', options: [], is_system: false,
   colorList: [], ratingMax: 5, ddStart: '', ddEnd: '', ddStatus: '', ddValues: [],
-  ddStartField: '', ddStartValues: [], numPrecision: '',
+  ddStartField: '', ddStartValues: [], numPrecision: '', numAggregate: false,
   qtyMode: 'auto', qtyUnit: ''
 })
 
@@ -1211,6 +1215,7 @@ function openFieldEdit(f) {
       ddStartValues: isDiff && Array.isArray(raw?.start_values) ? [...raw.start_values] : [],
       numPrecision: isNum && raw?.precision !== undefined && raw?.precision !== null
         ? Number(raw.precision) : '',
+      numAggregate: isNum && raw?.aggregate === true,
       qtyMode: isQty && raw?.mode === 'manual' ? 'manual' : 'auto',
       qtyUnit: isQty ? (raw?.unit || '') : '',
       is_system: !!f.is_system
@@ -1220,7 +1225,7 @@ function openFieldEdit(f) {
       id: null, table_id: fieldsTable.value.id, label: '', type: 'text',
       required: false, default_value: '', options: [], is_system: false,
       colorList: [], ratingMax: 5, ddStart: '', ddEnd: '', ddStatus: '', ddValues: [],
-      ddStartField: '', ddStartValues: [], numPrecision: '',
+      ddStartField: '', ddStartValues: [], numPrecision: '', numAggregate: false,
       qtyMode: 'auto', qtyUnit: ''
     })
   }
@@ -1250,6 +1255,7 @@ async function saveField() {
   } else if (t === 'number') {
     options = fieldForm.numPrecision === '' || fieldForm.numPrecision === null
       ? {} : { precision: Number(fieldForm.numPrecision) }
+    if (fieldForm.numAggregate) options.aggregate = true
   }
   savingField.value = true
   try {

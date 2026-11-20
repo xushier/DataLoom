@@ -72,7 +72,11 @@ def norm_field_options(ftype, raw):
             p = int(p)
         except (TypeError, ValueError):
             p = None
-        return {"precision": min(6, max(0, p))} if p is not None else {}
+        out = {"precision": min(6, max(0, p))} if p is not None else {}
+        # 是否在表格底部统计该列合计
+        if r.get("aggregate") is True or r.get("aggregate") == 1:
+            out["aggregate"] = True
+        return out
     if ftype == "contact":
         return {}
     return [str(o).strip() for o in (raw or []) if str(o).strip()]
@@ -453,6 +457,16 @@ def sort_key(v):
         return (1, 0.0, s.lower())
 
 
+def truthy(v):
+    """布尔型字段取值归一：兼容 true/1/'1'/'是' 等写法"""
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, (int, float)):
+        return v != 0
+    return str(v if v is not None else "").strip().lower() in (
+        "1", "true", "yes", "是", "已开启", "开启")
+
+
 def load_records(tid):
     """未删除（不在回收站）的记录"""
     rows = D.query(
@@ -501,21 +515,56 @@ def apply_query(records, table, args):
                 continue
             op = cond.get("op")
             val = cond.get("value")
-            ftype = fmap.get(key, {}).get("type")
+            field = fmap.get(key) or {}
+            ftype = field.get("type")
+            raw = data.get(key)
             if ftype == "date_diff":
                 target = (r.get("calc") or {}).get(key, {}).get("days", "")
             elif ftype == "quantity":
                 # 区间按总数比较，其余按可读文本匹配
                 if op == "range":
-                    target = qty_total(data.get(key))
+                    target = qty_total(raw)
                     if target is None:
                         target = ""
                 else:
-                    target = quantity_text(data.get(key),
-                                           qty_config(fmap[key])["unit"])
+                    target = quantity_text(raw, qty_config(field)["unit"])
             else:
-                target = data.get(key, "")
-            tstr = str(target if target is not None else "")
+                target = raw if raw is not None else ""
+
+            # 多选类字段：命中任一所选值即算匹配
+            if ftype in ("multi_select", "checkbox"):
+                items = target if isinstance(target, list) else (
+                    [target] if str(target).strip() else [])
+                items = [str(x).strip() for x in items if str(x).strip()]
+                joined = "、".join(items)
+                if op == "in":
+                    vals = [str(x) for x in (val or [])]
+                    if vals and not any(x in vals for x in items):
+                        ok = False
+                        break
+                elif op == "like":
+                    if (val or "") and (val or "").lower() not in joined.lower():
+                        ok = False
+                        break
+                elif op == "eq":
+                    if val is not None and val != "" and joined != str(val):
+                        ok = False
+                        break
+                elif op == "empty":
+                    if val is True and items:
+                        ok = False
+                        break
+                    if val is False and not items:
+                        ok = False
+                        break
+                continue
+
+            # 开关类字段：true/false 统一成 1/0 再比较
+            if ftype == "switch":
+                tstr = "1" if truthy(target) else "0"
+            else:
+                tstr = str(target if target is not None else "")
+
             if op == "in":
                 vals = [str(x) for x in (val or [])]
                 if vals and tstr not in vals:
@@ -526,9 +575,16 @@ def apply_query(records, table, args):
                     ok = False
                     break
             elif op == "eq":
-                if val is not None and val != "" and tstr != str(val):
-                    ok = False
-                    break
+                if val is not None and val != "":
+                    matched = tstr == str(val)
+                    if not matched and ftype in ("number", "rating"):
+                        try:
+                            matched = float(tstr or 0) == float(val)
+                        except ValueError:
+                            matched = False
+                    if not matched:
+                        ok = False
+                        break
             elif op == "range":
                 lo, hi = (val or [None, None])
                 lo, hi = str(lo or ""), str(hi or "")
@@ -963,8 +1019,28 @@ def list_records(tid):
     size = min(500, max(1, int(request.args.get("page_size", 100 if mode == "page" else 50))))
     start = (page - 1) * size
     items = records[start:start + size]
+    # 数字字段合计：开启「统计」的字段按当前筛选结果求和
+    summary = {}
+    for f in table["fields"]:
+        opts = f.get("options")
+        if f["type"] != "number" or not isinstance(opts, dict):
+            continue
+        if opts.get("aggregate") is not True:
+            continue
+        s, has = 0.0, False
+        for r in records:
+            try:
+                v = float(r["data"].get(f["key"]))
+            except (TypeError, ValueError):
+                continue
+            if v != v or v in (float("inf"), float("-inf")):
+                continue
+            s += v
+            has = True
+        summary[f["key"]] = round(s, 6) if has else None
     return jsonify(ok=True, total=total, page=page, page_size=size,
                    has_more=start + size < total,
+                   summary=summary,
                    items=[record_row(r) for r in items],
                    fields=table["fields"])
 
@@ -1307,7 +1383,7 @@ def export_records(tid):
     table = get_table(tid)
     if not table:
         return jsonify(ok=False, message="表不存在"), 404
-    records = apply_query(load_records(tid), table, request.args)
+    records = apply_query(decorate(table, load_records(tid)), table, request.args)
     from . import excelio
     resp = excelio.export_xlsx(table, records)
     D.log_op(g.req_user_name(), "export", tid, table["name"],

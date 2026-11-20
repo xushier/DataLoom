@@ -93,6 +93,7 @@
                 @sort-change="onSortChange" @row-click="onRowClick"
                 @row-dblclick="onRowDblclick"
                 @selection-change="onSelectionChange"
+                :show-summary="showSummary" :summary-method="summaryMethod"
                 @header-dragend="onHeaderDragend" v-el-scroll>
         <template #empty>
           <el-empty :description="search || filterCount ? '未找到匹配数据'
@@ -165,10 +166,10 @@
                 </el-popover>
               </template>
             </span>
-            <!-- 多选：按值取色的浅色胶囊，避免整表一片同色标签 -->
+            <!-- 多选：中性浅色小标签，颜色只保留给彩色标签字段 -->
             <template v-else-if="Array.isArray(row.data[f.key])">
               <span v-for="(v, i) in row.data[f.key]" :key="i"
-                    class="cell-pill" :style="pillStyle(f, v)">{{ v }}</span>
+                    class="cell-tag">{{ v }}</span>
             </template>
             <!-- 开关：列表内直接切换，点击即保存 -->
             <span v-else-if="f.type === 'switch'" class="sw-cell"
@@ -322,6 +323,38 @@ const activeTable = computed(() => tables.value.find(t => t.id === activeId.valu
 const filterCount = computed(() => Object.keys(filters.value).length)
 const visibleFields = computed(() => fields.value.filter(f => visibleKeys.value.includes(f.key)))
 
+/* ---------------- 数字字段合计 ---------------- */
+
+const summaryData = ref({})   // 后端按当前筛选结果返回：{字段key: 合计值}
+
+function isAggField(f) {
+  return f && f.type === 'number' && f.options && typeof f.options === 'object'
+    && f.options.aggregate === true
+}
+const showSummary = computed(() => visibleFields.value.some(isAggField))
+
+function fmtAgg(v, f) {
+  if (v === null || v === undefined || v === '') return ''
+  const num = Number(v)
+  if (!Number.isFinite(num)) return ''
+  const p = Number(f?.options?.precision)
+  if (f?.options?.precision !== undefined && f?.options?.precision !== null
+      && Number.isFinite(p) && p >= 0) {
+    return num.toFixed(Math.min(6, p))
+  }
+  return Number.isInteger(num) ? String(num) : String(Math.round(num * 1e6) / 1e6)
+}
+
+function summaryMethod({ columns }) {
+  return columns.map((col, i) => {
+    if (i === 0) return '合计'
+    const key = (col.property || '').replace('data.', '')
+    const f = fields.value.find(x => x.key === key)
+    if (!isAggField(f)) return ''
+    return fmtAgg(summaryData.value[key], f)
+  })
+}
+
 /* ---------------- 彩色标签 / 行色条 ---------------- */
 
 const FALLBACK_COLORS = ['#5470c6', '#2f9e44', '#e8a33d', '#d94b4b',
@@ -436,16 +469,6 @@ async function onRate(f, row, v) {
   } finally {
     delete ratingBusy[key]
   }
-}
-
-/* 多选标签：同字段不同类型也能一眼区分，按「字段 + 值」稳定取色 */
-const PILL_COLORS = ['#3a7bd5', '#2f9e44', '#d98a1f', '#c9506e',
-                     '#7b5fc9', '#13a8a8', '#c0563f', '#5a7d9a']
-function pillStyle(f, v) {
-  const s = `${f.key}:${v}`
-  let h = 0
-  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0
-  return { '--pill': PILL_COLORS[h % PILL_COLORS.length] }
 }
 
 /* ---------------- 数量明细 ---------------- */
@@ -594,6 +617,7 @@ async function load(append = false) {
     const res = await http.get(`/tables/${activeId.value}/records`, { params })
     total.value = res.total
     hasMore.value = res.has_more
+    summaryData.value = res.summary || {}
     if (append) records.value.push(...res.items)
     else records.value = res.items
   } finally {
@@ -957,16 +981,23 @@ html.dark .dc-table :deep(.el-table__body tr:hover > td.el-table__cell) {
   background: color-mix(in srgb, var(--dc-primary) 16%, var(--dc-card));
 }
 
-/* 多选值胶囊：按值取色，替代清一色的标签 */
-.cell-pill {
-  display: inline-block; margin: 1px 4px 1px 0; padding: 0 7px;
-  border-radius: 5px; font-size: 12px; line-height: 18px; white-space: nowrap;
-  background: color-mix(in srgb, var(--pill) 13%, transparent);
-  color: color-mix(in srgb, var(--pill) 82%, var(--dc-text));
+/* 多选值标签：统一中性样式，不用彩色区分 */
+.cell-tag {
+  display: inline-block; margin: 1px 4px 1px 0; padding: 0 6px;
+  border-radius: 4px; font-size: 12px; line-height: 18px; white-space: nowrap;
+  background: var(--el-fill-color-light); color: var(--el-text-color-regular);
 }
-html.dark .cell-pill {
-  background: color-mix(in srgb, var(--pill) 24%, transparent);
-  color: color-mix(in srgb, var(--pill) 62%, white);
+html.dark .cell-tag {
+  background: var(--el-fill-color-dark);
+  color: var(--el-text-color-regular);
+}
+
+/* 合计行：贴合表头样式，弱化存在感 */
+.table-card :deep(.el-table__footer-wrapper .el-table__cell) {
+  background: var(--dc-bg-soft);
+  color: var(--dc-text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
 }
 
 /* 开关：列表内直接切换 */

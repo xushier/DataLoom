@@ -1,7 +1,13 @@
 <template>
   <div class="fp">
-    <el-form label-width="88px" label-position="left" size="default" class="fp-form">
-      <template v-for="f in editableFields" :key="f.key">
+    <div class="fp-head">
+      <el-input v-model="query" size="small" placeholder="搜索字段名" :prefix-icon="Search"
+                clearable class="fp-search" />
+      <span class="muted fp-count">{{ activeCount ? `${activeCount} 项` : '无筛选' }}</span>
+    </div>
+    <el-scrollbar max-height="48vh" class="fp-body">
+      <el-form label-width="88px" label-position="left" size="default" class="fp-form">
+        <template v-for="f in shownFields" :key="f.key">
         <el-form-item v-if="isRange(f.type)" :label="f.label">
           <el-date-picker
             v-model="draft[f.key]"
@@ -40,8 +46,10 @@
         <el-form-item v-else :label="f.label">
           <el-input v-model="draft[f.key]" placeholder="包含文字" clearable />
         </el-form-item>
-      </template>
-    </el-form>
+        </template>
+        <div v-if="!shownFields.length" class="fp-empty muted">没有匹配的字段</div>
+      </el-form>
+    </el-scrollbar>
     <div class="fp-foot">
       <span class="muted">{{ activeCount ? `已应用 ${activeCount} 项筛选` : '暂无筛选' }}</span>
       <div>
@@ -53,7 +61,8 @@
 </template>
 
 <script setup>
-import { computed, reactive, watch } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
+import { Search } from '@element-plus/icons-vue'
 
 const props = defineProps({
   fields: { type: Array, default: () => [] },
@@ -63,6 +72,16 @@ const props = defineProps({
 const emit = defineEmits(['update:modelValue'])
 
 const editableFields = computed(() => props.fields.filter(f => f.key !== 'sn'))
+
+/* 字段多时按名称搜索，避免筛选面板过长 */
+const query = ref('')
+const shownFields = computed(() => {
+  const kw = query.value.trim().toLowerCase()
+  if (!kw) return editableFields.value
+  return editableFields.value.filter(f =>
+    String(f.label || '').toLowerCase().includes(kw) ||
+    String(f.key || '').toLowerCase().includes(kw))
+})
 
 const draft = reactive({})
 
@@ -136,8 +155,17 @@ function reset() {
 </script>
 
 <style scoped>
-.fp { width: 300px; }
+.fp { width: 320px; }
+.fp-head {
+  display: flex; align-items: center; gap: 10px;
+  padding-bottom: 8px; margin-bottom: 6px;
+  border-bottom: 1px solid var(--dc-border);
+}
+.fp-search { flex: 1; min-width: 0; }
+.fp-count { white-space: nowrap; font-size: 12px; }
+.fp-body { margin: 0 -2px; padding: 0 2px; }
 .fp-form :deep(.el-form-item) { margin-bottom: 10px; }
+.fp-empty { text-align: center; padding: 18px 0; font-size: 13px; }
 .fp-num { display: flex; align-items: center; gap: 6px; width: 100%; }
 .fp-dot { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
           margin-right: 8px; vertical-align: middle; }
